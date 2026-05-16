@@ -119,6 +119,51 @@ pub fn search(conn: &Connection, query: &str, limit: usize) -> Result<Vec<Villag
     rows.collect()
 }
 
+/// Search for a single unique village by name.
+///
+/// Returns a single match if exactly one result exists, otherwise returns all
+/// matches (up to 20) for the caller to disambiguate.
+pub fn search_unique(conn: &Connection, query: &str) -> Result<LookupResult> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT l.kode, l.nama, l.kecamatan, l.kota, l.provinsi, l.lat, l.lon
+         FROM locations_fts f
+         JOIN locations l ON f.rowid = l.id
+         WHERE locations_fts MATCH ?1
+         ORDER BY rank
+         LIMIT 20",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![query], |row| {
+        Ok(Village {
+            code: row.get(0)?,
+            name: row.get(1)?,
+            district: row.get(2)?,
+            city: row.get(3)?,
+            province: row.get(4)?,
+            lat: row.get(5)?,
+            lon: row.get(6)?,
+            dist_km: None,
+        })
+    })?;
+    let results: Vec<_> = rows.collect::<Result<Vec<_>>>()?;
+
+    Ok(match results.len() {
+        0 => LookupResult::NotFound,
+        1 => LookupResult::Found(results.into_iter().next().unwrap()),
+        _ => LookupResult::Ambiguous(results),
+    })
+}
+
+/// Result of an unambiguous name lookup.
+#[derive(Debug, Clone)]
+pub enum LookupResult {
+    /// Exactly one match
+    Found(Village),
+    /// Multiple matches found
+    Ambiguous(Vec<Village>),
+    /// No matches
+    NotFound,
+}
+
 /// A village record with administrative hierarchy and coordinates.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Village {

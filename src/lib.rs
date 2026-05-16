@@ -32,7 +32,7 @@
 
 mod db;
 
-pub use db::{nearest, open_embedded, search, Village};
+pub use db::{nearest, open_embedded, search, search_unique, LookupResult, Village};
 
 /// Metadata about the embedded location database.
 ///
@@ -171,6 +171,48 @@ pub fn find_by_name(
     db::search(conn, query, limit)
 }
 
+/// Search for a unique village by name.
+///
+/// Returns [`LookupResult::Found`] if exactly one match exists,
+/// [`LookupResult::Ambiguous`] with up to 20 candidates if multiple match,
+/// or [`LookupResult::NotFound`] if no match exists.
+///
+/// This is useful for callers that need unambiguous results. For example,
+/// a CLI tool can show an error with candidate list when the result is
+/// ambiguous, rather than silently picking the wrong village.
+///
+/// # Arguments
+///
+/// * `conn` - Database connection from [`open()`]
+/// * `query` - Search query (e.g., `"kemayoran"` or `"kemayoran jakarta"`)
+///
+/// # Example: exact match
+///
+/// ```
+/// let conn = wilayah::open()?;
+/// let result = wilayah::find_by_name_unique(&conn, "abadijaya")?;
+/// if let wilayah::LookupResult::Found(v) = result {
+///     println!("Found: {} in {}", v.name, v.city);
+/// }
+/// # Ok::<_, rusqlite::Error>(())
+/// ```
+///
+/// # Example: ambiguous name
+///
+/// ```
+/// let conn = wilayah::open()?;
+/// // "sukamaju" exists in many villages across Indonesia
+/// let result = wilayah::find_by_name_unique(&conn, "sukamaju")?;
+/// assert!(matches!(result, wilayah::LookupResult::Ambiguous(_)));
+/// # Ok::<_, rusqlite::Error>(())
+/// ```
+pub fn find_by_name_unique(
+    conn: &rusqlite::Connection,
+    query: &str,
+) -> rusqlite::Result<LookupResult> {
+    db::search_unique(conn, query)
+}
+
 /// Get the total number of villages in the database.
 ///
 /// # Example
@@ -251,5 +293,44 @@ mod tests {
         let results = find_by_name(&conn, "kemayoran jakarta", 5).unwrap();
         assert!(!results.is_empty(), "should find Kemayoran Jakarta");
         assert!(results.iter().all(|v| v.city.contains("Jakarta")));
+    }
+
+    #[test]
+    fn test_unique_found() {
+        let conn = open().unwrap();
+        let result = find_by_name_unique(&conn, "abadijaya").unwrap();
+        assert!(
+            matches!(result, LookupResult::Found(_)),
+            "expected Found, got {:?}",
+            result
+        );
+        if let LookupResult::Found(v) = result {
+            assert_eq!(v.name, "Abadijaya");
+        }
+    }
+
+    #[test]
+    fn test_unique_ambiguous() {
+        let conn = open().unwrap();
+        let result = find_by_name_unique(&conn, "sukamaju").unwrap();
+        assert!(
+            matches!(result, LookupResult::Ambiguous(_)),
+            "sukamaju should be ambiguous, got {:?}",
+            result
+        );
+        if let LookupResult::Ambiguous(results) = result {
+            assert!(results.len() > 1, "should have multiple matches");
+        }
+    }
+
+    #[test]
+    fn test_unique_not_found() {
+        let conn = open().unwrap();
+        let result = find_by_name_unique(&conn, "zzzznonexistent").unwrap();
+        assert!(
+            matches!(result, LookupResult::NotFound),
+            "should be not found, got {:?}",
+            result
+        );
     }
 }
