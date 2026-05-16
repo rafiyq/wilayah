@@ -11,43 +11,86 @@ const WILAYAH_URL: &str =
 const GITHUB_TREE_URL: &str =
     "https://api.github.com/repos/cahyadsn/wilayah_boundaries/git/trees/main?recursive=1";
 
+const DATA_SOURCE: &str = "cahyadsn/wilayah_boundaries";
+const DATA_DECREE: &str = "Kepmendagri No 300.2.2-2430 Tahun 2025";
+
 fn main() {
     let out_dir = std::env::var("OUT_DIR").unwrap();
     let db_path = Path::new(&out_dir).join("locations.db");
 
-    // For local dev, also check/write to source data dir so the DB is cached
-    // across builds. For publish --verify, only use OUT_DIR.
     let data_dir = Path::new("data");
     let data_db = data_dir.join("locations.db");
 
     println!("cargo:rerun-if-changed=data/wilayah.sql");
     println!("cargo:rerun-if-changed=build.rs");
 
-    // If the DB doesn't exist yet in OUT_DIR, build it
-    if !db_path.exists() {
-        // Try to use cached DB from source data dir first
-        if data_db.exists() {
-            std::fs::copy(&data_db, &db_path).expect("failed to copy cached DB to OUT_DIR");
+    let village_count: u32;
+
+    if db_path.exists() {
+        village_count = village_count_from_db(&db_path);
+    } else if data_db.exists() {
+        std::fs::copy(&data_db, &db_path).expect("failed to copy cached DB to OUT_DIR");
+        village_count = village_count_from_db(&db_path);
+    } else {
+        // Check WILAYAH_DATA_DIR for a pre-built DB
+        if let Ok(dir) = std::env::var("WILAYAH_DATA_DIR") {
+            let cached_db = Path::new(&dir).join("locations.db");
+            if cached_db.exists() {
+                std::fs::copy(&cached_db, &db_path)
+                    .expect("failed to copy WILAYAH_DATA_DIR DB to OUT_DIR");
+                village_count = village_count_from_db(&db_path);
+            } else {
+                println!("cargo:warning=Building locations.db from raw data (first build, this takes a minute)...");
+                let raw_dir = Path::new(&dir).to_path_buf();
+                village_count = download_and_build(&raw_dir, &data_db);
+                std::fs::copy(&data_db, &db_path).expect("failed to copy DB to OUT_DIR");
+            }
         } else {
             println!("cargo:warning=Building locations.db from raw data (first build, this takes a minute)...");
-            let raw_dir = data_dir.join("raw");
-            std::fs::create_dir_all(&raw_dir).expect("failed to create data/raw directory");
-            download_and_build(&raw_dir, &data_db);
-            // Copy to OUT_DIR
+            let raw_dir = Path::new("data").join("raw");
+            village_count = download_and_build(&raw_dir, &data_db);
             std::fs::copy(&data_db, &db_path).expect("failed to copy DB to OUT_DIR");
         }
     }
 
+    let build_date = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+
     println!("cargo:rustc-env=LOCATION_DB_PATH={}", db_path.display());
+    println!("cargo:rustc-env=WILAYAH_DATA_SOURCE={}", DATA_SOURCE);
+    println!("cargo:rustc-env=WILAYAH_DATA_DECREE={}", DATA_DECREE);
+    println!("cargo:rustc-env=WILAYAH_VILLAGE_COUNT={}", village_count);
+    println!("cargo:rustc-env=WILAYAH_BUILD_DATE={}", build_date);
+    println!("cargo:rerun-if-env-changed=WILAYAH_DATA_DIR");
 }
 
-fn download_and_build(raw_dir: &Path, db_path: &Path) {
-    let data_dir = raw_dir.parent().unwrap();
-    let wilayah_path = data_dir.join("wilayah.sql");
+fn village_count_from_db(db_path: &Path) -> u32 {
+    let conn = Connection::open(db_path).expect("failed to open DB for count");
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM locations", [], |row| row.get(0))
+        .expect("failed to query village count");
+    count as u32
+}
+
+fn download_and_build(raw_dir: &Path, db_path: &Path) -> u32 {
+    let wilayah_path = if let Ok(dir) = std::env::var("WILAYAH_DATA_DIR") {
+        Path::new(&dir).join("wilayah.sql")
+    } else {
+        raw_dir
+            .parent()
+            .unwrap_or_else(|| raw_dir)
+            .join("wilayah.sql")
+    };
     if !wilayah_path.exists() {
         println!("cargo:warning=Downloading wilayah.sql...");
-        let bytes = download(WILAYAH_URL);
+        let bytes = download(WILAYAH_URL, "wilayah.sql");
         fs::write(&wilayah_path, bytes).expect("failed to write wilayah.sql");
+    }
+
+    if !raw_dir.exists() {
+        fs::create_dir_all(raw_dir).expect("failed to create raw data directory");
     }
 
     let kel_urls = fetch_kel_urls();
@@ -62,7 +105,7 @@ fn download_and_build(raw_dir: &Path, db_path: &Path) {
                     kel_urls.len()
                 );
             }
-            let bytes = download(url);
+            let bytes = download(url, filename);
             fs::write(&local, bytes).expect(&format!("failed to write {filename}"));
             downloaded += 1;
             if downloaded % 50 == 0 {
@@ -75,33 +118,79 @@ fn download_and_build(raw_dir: &Path, db_path: &Path) {
     let wilayah = parse_wilayah(&wilayah_path);
     println!("cargo:warning=Loaded {} hierarchy entries.", wilayah.len());
 
-    let villages = parse_kel_files(&raw_dir, &wilayah);
+    let villages = parse_kel_files(raw_dir, &wilayah);
     println!(
         "cargo:warning=Found {} villages with valid hierarchy.",
         villages.len()
     );
 
+    let count = villages.len() as u32;
     build_db(&villages, db_path);
+    count
 }
 
-fn download(url: &str) -> Vec<u8> {
-    let resp = ureq::get(url)
+fn download(url: &str, name: &str) -> Vec<u8> {
+    match ureq::get(url)
         .timeout(std::time::Duration::from_secs(120))
         .call()
-        .expect(&format!("failed to fetch {url}"));
-    let mut reader = resp.into_reader();
-    let mut buf = Vec::new();
-    std::io::Read::read_to_end(&mut reader, &mut buf).expect("failed to read response body");
-    buf
+    {
+        Ok(resp) => {
+            let mut reader = resp.into_reader();
+            let mut buf = Vec::new();
+            std::io::Read::read_to_end(&mut reader, &mut buf).unwrap_or_else(|e| {
+                build_panic(&format!("failed to read response body for {}: {}", name, e))
+            });
+            buf
+        }
+        Err(e) => {
+            let msg = match e {
+                ureq::Error::Status(403, _) => format!(
+                    "GitHub rate limited while fetching {}. \
+                     Try again in a few minutes, or set WILAYAH_DATA_DIR \
+                     to a directory containing pre-downloaded kel/*.sql files.",
+                    name
+                ),
+                ureq::Error::Status(code, _) => {
+                    format!("HTTP {} while fetching {}. URL: {}", code, name, url)
+                }
+                ureq::Error::Transport(t) => format!(
+                    "Network error fetching {}: {}. \
+                     Check your internet connection, or set WILAYAH_DATA_DIR \
+                     to a directory with pre-downourced data files.",
+                    name, t
+                ),
+            };
+            build_panic(&msg);
+        }
+    }
 }
 
 fn fetch_kel_urls() -> Vec<(String, String)> {
-    let resp = ureq::get(GITHUB_TREE_URL)
+    let resp = match ureq::get(GITHUB_TREE_URL)
         .timeout(std::time::Duration::from_secs(30))
         .call()
-        .expect("failed to fetch GitHub tree");
-    let json: serde_json::Value =
-        serde_json::from_reader(resp.into_reader()).expect("failed to parse tree JSON");
+    {
+        Ok(r) => r,
+        Err(e) => {
+            let msg = match e {
+                ureq::Error::Status(403, _) => {
+                    "GitHub rate limited while fetching repository file list. \
+                     Try again in a few minutes, or set WILAYAH_DATA_DIR \
+                     to a directory containing pre-downloaded kel/*.sql files."
+                        .to_string()
+                }
+                ureq::Error::Transport(t) => format!(
+                    "Network error fetching repository file list: {}. \
+                     Check your internet connection, or set WILAYAH_DATA_DIR.",
+                    t
+                ),
+                other => format!("Error fetching repository file list: {}", other),
+            };
+            build_panic(&msg);
+        }
+    };
+    let json: serde_json::Value = serde_json::from_reader(resp.into_reader())
+        .unwrap_or_else(|e| build_panic(&format!("Failed to parse repository tree JSON: {}", e)));
 
     let mut urls = Vec::new();
     if let Some(tree) = json.get("tree").and_then(|t| t.as_array()) {
@@ -286,4 +375,11 @@ fn build_db(villages: &[(String, String, String, String, String, f64, f64)], db_
         "cargo:warning=Database written: {:.1} MB",
         size as f64 / (1024.0 * 1024.0)
     );
+}
+
+fn build_panic(msg: &str) -> ! {
+    println!("cargo:warning=BUILD FAILED: {}", msg);
+    println!("cargo:warning=For offline builds, set WILAYAH_DATA_DIR to a directory");
+    println!("cargo:warning=containing wilayah.sql and kel/*.sql files.");
+    panic!("{}", msg);
 }

@@ -12,6 +12,7 @@ fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     EARTH_RADIUS_KM * 2.0 * a.sqrt().asin()
 }
 
+/// Open the embedded database connection and register the Haversine UDF.
 pub fn open_embedded() -> Result<Connection> {
     let mut conn = Connection::open_in_memory()?;
     conn.execute_batch("PRAGMA journal_mode = OFF")?;
@@ -34,6 +35,7 @@ pub fn open_embedded() -> Result<Connection> {
     Ok(conn)
 }
 
+/// Find nearest villages using RTree spatial index + Haversine distance.
 pub fn nearest(conn: &Connection, lat: f64, lon: f64, limit: usize) -> Result<Vec<Village>> {
     let limit = limit.min(20).max(1);
 
@@ -87,6 +89,7 @@ pub fn nearest(conn: &Connection, lat: f64, lon: f64, limit: usize) -> Result<Ve
     Ok(vec![])
 }
 
+/// Search villages by name using FTS5 full-text search.
 pub fn search(conn: &Connection, query: &str, limit: usize) -> Result<Vec<Village>> {
     let limit = limit.min(100).max(1);
 
@@ -116,15 +119,25 @@ pub fn search(conn: &Connection, query: &str, limit: usize) -> Result<Vec<Villag
     rows.collect()
 }
 
+/// A village record with administrative hierarchy and coordinates.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Village {
+    /// BMKG-compatible administrative code (e.g., `31.71.03.1001`)
     pub code: String,
+    /// Village (desa/kelurahan) name
     pub name: String,
+    /// District (kecamatan) name
     pub district: String,
+    /// City/regency (kabupaten/kota) name
     pub city: String,
+    /// Province name
     pub province: String,
+    /// Latitude coordinate
     pub lat: f64,
+    /// Longitude coordinate
     pub lon: f64,
+    /// Distance from query point in kilometers.
+    /// Only set by `find_nearest()`, always `None` from `find_by_name()`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dist_km: Option<f64>,
 }
