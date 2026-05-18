@@ -1,4 +1,5 @@
 use rusqlite::{functions::FunctionFlags, Connection, Result};
+use std::fmt;
 
 const DB_BYTES: &[u8] = include_bytes!(env!("LOCATION_DB_PATH"));
 
@@ -37,7 +38,7 @@ pub fn open_embedded() -> Result<Connection> {
 
 /// Find nearest villages using RTree spatial index + Haversine distance.
 pub fn nearest(conn: &Connection, lat: f64, lon: f64, limit: usize) -> Result<Vec<Village>> {
-    let limit = limit.min(20).max(1);
+    let limit = limit.clamp(1, 20);
 
     let deltas: [f64; 10] = [0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0, 15.0, 45.0, 180.0];
 
@@ -91,7 +92,7 @@ pub fn nearest(conn: &Connection, lat: f64, lon: f64, limit: usize) -> Result<Ve
 
 /// Search villages by name using FTS5 full-text search.
 pub fn search(conn: &Connection, query: &str, limit: usize) -> Result<Vec<Village>> {
-    let limit = limit.min(100).max(1);
+    let limit = limit.clamp(1, 100);
 
     let sql = "
         SELECT l.kode, l.nama, l.kecamatan, l.kota, l.provinsi, l.lat, l.lon
@@ -116,6 +117,58 @@ pub fn search(conn: &Connection, query: &str, limit: usize) -> Result<Vec<Villag
         })
     })?;
 
+    rows.collect()
+}
+
+/// Lookup a village by its BMKG administrative code (e.g., `31.71.03.1001`).
+pub fn by_code(conn: &Connection, code: &str) -> Result<Option<Village>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT kode, nama, kecamatan, kota, provinsi, lat, lon
+         FROM locations
+         WHERE kode = ?1",
+    )?;
+    let mut rows = stmt.query_map(rusqlite::params![code], |row| {
+        Ok(Village {
+            code: row.get(0)?,
+            name: row.get(1)?,
+            district: row.get(2)?,
+            city: row.get(3)?,
+            province: row.get(4)?,
+            lat: row.get(5)?,
+            lon: row.get(6)?,
+            dist_km: None,
+        })
+    })?;
+    match rows.next() {
+        Some(Ok(v)) => Ok(Some(v)),
+        Some(Err(e)) => Err(e),
+        None => Ok(None),
+    }
+}
+
+/// Lookup all villages matching an administrative code prefix (e.g., `"31.71.03"`).
+pub fn by_code_prefix(conn: &Connection, prefix: &str, limit: usize) -> Result<Vec<Village>> {
+    let limit = limit.clamp(1, 1000);
+    let pattern = format!("{}%", prefix);
+    let mut stmt = conn.prepare_cached(
+        "SELECT kode, nama, kecamatan, kota, provinsi, lat, lon
+         FROM locations
+         WHERE kode LIKE ?1
+         ORDER BY kode
+         LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![pattern, limit as i64], |row| {
+        Ok(Village {
+            code: row.get(0)?,
+            name: row.get(1)?,
+            district: row.get(2)?,
+            city: row.get(3)?,
+            province: row.get(4)?,
+            lat: row.get(5)?,
+            lon: row.get(6)?,
+            dist_km: None,
+        })
+    })?;
     rows.collect()
 }
 
@@ -154,6 +207,16 @@ pub fn search_unique(conn: &Connection, query: &str) -> Result<LookupResult> {
 }
 
 /// Result of an unambiguous name lookup.
+///
+/// Implements [`Display`] for friendly CLI output:
+///
+/// ```ignore
+/// match result {
+///     LookupResult::Found(v) => println!("{v}"),
+///     LookupResult::Ambiguous(list) => println!("{result}"),
+///     LookupResult::NotFound => eprintln!("{result}"),
+/// }
+/// ```
 #[derive(Debug, Clone)]
 pub enum LookupResult {
     /// Exactly one match
@@ -162,6 +225,25 @@ pub enum LookupResult {
     Ambiguous(Vec<Village>),
     /// No matches
     NotFound,
+}
+
+impl fmt::Display for LookupResult {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LookupResult::Found(v) => write!(f, "{}", v),
+            LookupResult::Ambiguous(list) => {
+                writeln!(f, "Found {} matching villages:", list.len())?;
+                for (i, v) in list.iter().enumerate() {
+                    writeln!(f, "  {}. {}", i + 1, v)?;
+                }
+                write!(
+                    f,
+                    "Use a more specific query (e.g., include city or province)"
+                )
+            }
+            LookupResult::NotFound => write!(f, "No matching village found"),
+        }
+    }
 }
 
 /// A village record with administrative hierarchy and coordinates.
@@ -185,4 +267,14 @@ pub struct Village {
     /// Only set by `find_nearest()`, always `None` from `find_by_name()`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dist_km: Option<f64>,
+}
+
+impl fmt::Display for Village {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} — {}, {}, {} ({})",
+            self.name, self.district, self.city, self.province, self.code
+        )
+    }
 }

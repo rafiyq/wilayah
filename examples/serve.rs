@@ -4,7 +4,7 @@ use axum::{
     routing::get,
     Json, Router,
 };
-use wilayah::{Village, find_by_name, find_nearest, village_count};
+use wilayah::{Village, find_by_code, find_by_code_prefix, find_by_name, find_nearest, village_count};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -43,8 +43,20 @@ struct SearchParams {
     limit: usize,
 }
 
+#[derive(Debug, Deserialize)]
+struct CodeParams {
+    q: Option<String>,
+    prefix: Option<String>,
+    #[serde(default = "default_code_prefix_limit")]
+    limit: usize,
+}
+
 fn default_limit() -> usize {
     5
+}
+
+fn default_code_prefix_limit() -> usize {
+    100
 }
 
 #[derive(Serialize)]
@@ -56,6 +68,16 @@ struct IndexResponse {
 
 #[derive(Serialize)]
 struct SearchResponse {
+    results: Vec<Village>,
+}
+
+#[derive(Serialize)]
+struct CodeResponse {
+    result: Option<Village>,
+}
+
+#[derive(Serialize)]
+struct CodePrefixResponse {
     results: Vec<Village>,
 }
 
@@ -86,7 +108,7 @@ async fn nearest(
             }),
         ));
     }
-    let limit = params.limit.min(20).max(1);
+    let limit = params.limit.clamp(1, 20);
     info!("nearest: lat={}, lon={}, limit={}", params.lat, params.lon, limit);
     let db = state.db.lock().unwrap();
     let results = find_nearest(&db, params.lat, params.lon, limit).map_err(|e| {
@@ -112,7 +134,7 @@ async fn search(
             }),
         ));
     }
-    let limit = params.limit.min(100).max(1);
+    let limit = params.limit.clamp(1, 100);
     info!("search: q={}, limit={}", params.q, limit);
     let db = state.db.lock().unwrap();
     let results = find_by_name(&db, &params.q, limit).map_err(|e| {
@@ -124,6 +146,62 @@ async fn search(
         )
     })?;
     Ok(Json(SearchResponse { results }))
+}
+
+async fn code(
+    state: State<Arc<AppState>>,
+    Query(params): Query<CodeParams>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
+    let db = state.db.lock().unwrap();
+    if let Some(q) = &params.q {
+        let code = q.trim();
+        if code.is_empty() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "Parameter 'q' must not be empty".into(),
+                }),
+            ));
+        }
+        info!("code: exact lookup for {}", code);
+        let result = find_by_code(&db, code).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("{e}"),
+                }),
+            )
+        })?;
+        return Ok(Json(serde_json::to_value(CodeResponse { result }).unwrap()));
+    }
+    if let Some(prefix) = &params.prefix {
+        let prefix = prefix.trim();
+        if prefix.is_empty() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "Parameter 'prefix' must not be empty".into(),
+                }),
+            ));
+        }
+        let limit = params.limit.clamp(1, 1000);
+        info!("code: prefix lookup for {} (limit={})", prefix, limit);
+        let results = find_by_code_prefix(&db, prefix, limit).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("{e}"),
+                }),
+            )
+        })?;
+        return Ok(Json(serde_json::to_value(CodePrefixResponse { results }).unwrap()));
+    }
+    Err((
+        StatusCode::BAD_REQUEST,
+        Json(ErrorResponse {
+            error: "Provide either 'q' (exact code) or 'prefix' (code prefix)".into(),
+        }),
+    ))
 }
 
 #[tokio::main]
@@ -143,6 +221,7 @@ async fn main() {
         .route("/", get(index))
         .route("/nearest", get(nearest))
         .route("/search", get(search))
+        .route("/code", get(code))
         .with_state(state)
         .layer(cors);
 

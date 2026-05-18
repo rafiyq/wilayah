@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 description = "Location lookup for Indonesian villages by GPS coordinates or name"
-repository = "https://github.com/your-org/wilayah"
+repository = "https://github.com/rafiyq/wilayah"
 documentation = "https://docs.rs/wilayah"
 keywords = ["indonesia", "geolocation", "administrative", "bmkg", "village"]
 categories = ["science::geo", "database"]
@@ -19,6 +19,7 @@ rusqlite = { version = "0.39", features = ["serialize", "bundled"] }
 ureq = "2"
 regex = "1"
 serde_json = "1"
+sha2 = "0.10"
 
 [dev-dependencies]
 axum = "0.8"

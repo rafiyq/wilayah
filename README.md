@@ -3,9 +3,9 @@
 Location lookup for Indonesian villages by GPS coordinates or name.
 
 Returns BMKG-compatible `adm4` administrative codes (e.g., `31.71.03.1001`)
-for 82,689 villages across Indonesia, based on official Kemendagri administrative
-codes with pre-computed village centroids from BIG (Badan Informasi Geospasial)
-polygon boundaries.
+for 83,758 villages across Indonesia, sourced from the official Kemendagri
+decree (Kepmendagri No 300.2.2-2138 Tahun 2025) with village centroids
+computed from BIG (Badan Informasi Geospasial) polygon boundaries.
 
 ## Quick start (library)
 
@@ -13,9 +13,22 @@ polygon boundaries.
 use wilayah;
 
 let conn = wilayah::open()?;
+
+// Find nearest villages by GPS
 let nearest = wilayah::find_nearest(&conn, -6.1647, 106.8453, 5)?;
+
+// Search by name (FTS5, BM25 ranked)
 let results = wilayah::find_by_name(&conn, "kemayoran", 10)?;
-let unique  = wilayah::find_by_name_unique(&conn, "gambir")?;
+
+// Unambiguous lookup — returns Found, Ambiguous, or NotFound
+let unique = wilayah::find_by_name_unique(&conn, "gambir")?;
+println!("{unique}"); // "Gambir — Gambir, Kota Administrasi Jakarta Pusat, ... (31.71.05.1001)"
+
+// Direct lookup by administrative code
+let v = wilayah::find_by_code(&conn, "31.71.03.1001")?;
+
+// List all villages in a kecamatan, kabupaten, or province
+let villages = wilayah::find_by_code_prefix(&conn, "31.71.03", 100)?;
 ```
 
 ## Quick start (HTTP server)
@@ -25,6 +38,8 @@ cargo run --release --example serve
 
 curl "http://localhost:3000/nearest?lat=-6.1647&lon=106.8453"
 curl "http://localhost:3000/search?q=Kemayoran"
+curl "http://localhost:3000/code?q=31.71.03.1001"
+curl "http://localhost:3000/code?prefix=31.71.03"
 ```
 
 ## API
@@ -48,60 +63,107 @@ Server info and village count.
 | `q` | string | required | Search query |
 | `limit` | usize | 5 | Max results (1..100) |
 
+### `GET /code`
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `q` | string | optional | Exact administrative code (e.g., `31.71.03.1001`) |
+| `prefix` | string | optional | Code prefix (e.g., `31.71.03` for all villages in a kecamatan) |
+| `limit` | usize | 100 | Max results for prefix search (1..1000) |
+
+Provide either `q` or `prefix`. Exact lookup returns `{"result": {...}}` (or `null`),
+prefix returns `{"results": [...]}`.
+
 ## Data
 
 | | |
 |---|---|
 | **Administrative codes** | Kemendagri (Kepmendagri No 300.2.2-2138 Tahun 2025) |
-| **Village coordinates** | BIG polygon boundaries (pre-computed centroids) |
-| **Villages** | 82,689 across 38 provinces (all Papua regions included) |
+| **Village coordinates** | BIG polygon boundaries (computed centroids) |
+| **Villages** | 83,758 across 38 provinces (all Papua regions included) |
 | **License** | MIT |
 
-Data is sourced from upstream community repos
-([cahyadsn/wilayah](https://github.com/cahyadsn/wilayah) and
-[cahyadsn/wilayah_boundaries](https://github.com/cahyadsn/wilayah_boundaries))
-which faithfully transcribe official Kemendagri and BIG sources.
+Data is sourced directly from official government sources:
+- Administrative codes: Kemendagri PDF decree
+- Village boundaries: BIG ArcGIS REST API (polygon geometries)
 
 ### Building
 
-The first `cargo build` downloads ~300 MB of raw data from GitHub and builds a
-20 MB SQLite database. This is cached locally, so subsequent builds are fast.
+The first `cargo build` downloads the official Kemendagri PDF (~57 MB) and
+BIG village boundary data (~83K records), then builds a ~27 MB SQLite database.
+BIG data is cached locally, so subsequent builds complete in ~20 seconds.
 Requires network access on first build only.
 
 ```bash
-cargo build          # downloads data, builds DB, compiles
+cargo build          # downloads data, builds DB, compiles (~20s after cache)
 cargo build          # uses cached DB, instant
 ```
-
-For offline builds, set `WILAYAH_DATA_DIR` to a directory containing
-`wilayah.sql` and `kel/*.sql` files.
 
 ### Manually rebuilding the database
 
 ```bash
-rm data/locations.db data/raw -rf
+rm data/locations.db data/cache/big_villages.json -f
 cargo build          # downloads fresh data and rebuilds
 ```
+
+### Environment variables
+
+| Variable | Description |
+|----------|-------------|
+| `WILAYAH_REFRESH_BIG=1` | Force re-fetch BIG village data from ArcGIS API |
+| `WILAYAH_VERIFY_VERBOSE=1` | Print detailed verification report comparing official vs legacy data |
 
 ## Architecture
 
 - **Crate:** `wilayah` — SQLite + RTree + FTS5 + Haversine (single library crate)
 - **HTTP server:** `examples/serve.rs` — axum HTTP server wrapping the library
-- **Database:** SQLite (embedded via `include_bytes!`, ~21 MB)
+- **Database:** SQLite (embedded via `include_bytes!`, ~27 MB)
 - **Deployment:** `cargo run --release --example serve` → ~25 MB binary, zero runtime deps
 
-```
+```text
 wilayah (library)
-├── open()              → embedded SQLite connection
-├── find_nearest()      → RTree spatial index + Haversine distance
-├── find_by_name()      → FTS5 full-text search (BM25 ranked)
-├── find_by_name_unique() → disambiguation helper
-├── data_info()         → source, decree, version, build date
-└── Village struct      → code, name, hierarchy, coordinates, dist_km
+├── open() → embedded SQLite connection
+├── find_nearest() → RTree spatial index + Haversine distance
+├── find_by_name() → FTS5 full-text search (BM25 ranked)
+├── find_by_name_unique() → disambiguation helper (Display-friendly)
+├── find_by_code() → direct lookup by administrative code
+├── find_by_code_prefix() → hierarchical lookup (kecamatan/kabupaten/province)
+├── data_info() → source, decree, version, build date
+└── village_count() → total villages in database
 ```
 
-## Relationship to cuaca
+Data pipeline (build-time only)
+├── PDF extraction → pdftotext → state machine parser
+├── BIG API → ArcGIS REST → polygon centroid computation
+├── Merge → PDF codes + BIG coordinates
+└── Verification → cross-reference with legacy data
+```
 
-[cuaca](https://github.com/your-org/cuaca) is a BMKG weather indicator for Waybar.
-It uses `wilayah` as a library to resolve `--lat`/`--lon` or `--name` flags
-into adm4 codes for BMKG's weather API.
+## Disambiguation
+
+`find_by_name_unique()` returns a [`LookupResult`](https://docs.rs/wilayah/latest/wilayah/enum.LookupResult.html) with `Display` support for CLI-friendly output:
+
+| Result | `println!("{result}")` output |
+|--------|-------------------------------|
+| `Found(v)` | `"Gambir — Gambir, Kota Administrasi Jakarta Pusat, ... (31.71.05.1001)"` |
+| `Ambiguous(list)` | Numbered list of candidates + suggestion to refine query |
+| `NotFound` | `"No matching village found"` |
+
+Both [`Village`](https://docs.rs/wilayah/latest/wilayah/struct.Village.html) and `LookupResult` implement `Display` and `serde::Serialize`.
+
+## Verification
+
+The official data pipeline includes automatic verification against the legacy
+community-sourced data (cahyadsn/wilayah). On first official build, a snapshot
+of the legacy data is saved. Subsequent builds compare official data against
+this snapshot and print a summary report:
+
+- New villages: present in official but not legacy (2025 pemekaran)
+- Missing villages: present in legacy but not official (potential data loss)
+- Name differences: same code, different village name
+- Coordinate drift: BIG vs legacy centroid distance > 1km
+- Hierarchy differences: different district/city/province assignment
+
+## License
+
+MIT

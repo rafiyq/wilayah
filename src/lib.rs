@@ -32,7 +32,9 @@
 
 mod db;
 
-pub use db::{nearest, open_embedded, search, search_unique, LookupResult, Village};
+pub use db::{
+    by_code, by_code_prefix, nearest, open_embedded, search, search_unique, LookupResult, Village,
+};
 
 /// Metadata about the embedded location database.
 ///
@@ -213,6 +215,53 @@ pub fn find_by_name_unique(
     db::search_unique(conn, query)
 }
 
+/// Find a village by its BMKG-compatible administrative code.
+///
+/// Returns `None` if the code is not found in the database.
+///
+/// # Example
+///
+/// ```
+/// let conn = wilayah::open()?;
+/// let v = wilayah::find_by_code(&conn, "31.71.03.1001")?;
+/// assert!(v.is_some());
+/// # Ok::<_, rusqlite::Error>(())
+/// ```
+pub fn find_by_code(conn: &rusqlite::Connection, code: &str) -> rusqlite::Result<Option<Village>> {
+    db::by_code(conn, code)
+}
+
+/// Find all villages matching an administrative code prefix.
+///
+/// Useful for listing all villages in a kecamatan (`"31.71.03"`),
+/// kabupaten (`"31.71"`), or province (`"31"`). Returns villages
+/// ordered by code, up to `limit` results.
+///
+/// # Arguments
+///
+/// * `conn` - Database connection from [`open()`]
+/// * `prefix` - Code prefix (e.g., `"31.71.03"`, `"31.71"`, `"31"`)
+/// * `limit` - Maximum number of results (clamped to 1..1000)
+///
+/// # Example
+///
+/// ```
+/// let conn = wilayah::open()?;
+/// let villages = wilayah::find_by_code_prefix(&conn, "31.71.03", 100)?;
+/// assert!(!villages.is_empty());
+/// for v in &villages {
+///     assert!(v.code.starts_with("31.71.03"));
+/// }
+/// # Ok::<_, rusqlite::Error>(())
+/// ```
+pub fn find_by_code_prefix(
+    conn: &rusqlite::Connection,
+    prefix: &str,
+    limit: usize,
+) -> rusqlite::Result<Vec<Village>> {
+    db::by_code_prefix(conn, prefix, limit)
+}
+
 /// Get the total number of villages in the database.
 ///
 /// # Example
@@ -321,6 +370,55 @@ mod tests {
         if let LookupResult::Ambiguous(results) = result {
             assert!(results.len() > 1, "should have multiple matches");
         }
+    }
+
+    #[test]
+    fn test_find_by_code() {
+        let conn = open().unwrap();
+        let v = find_by_code(&conn, "31.71.03.1001").unwrap();
+        assert!(v.is_some(), "31.71.03.1001 should exist");
+        let v = v.unwrap();
+        assert_eq!(v.name, "Kemayoran");
+        assert_eq!(v.district, "Kemayoran");
+        assert_eq!(v.city, "Kota Administrasi Jakarta Pusat");
+        assert_eq!(v.province, "Provinsi Daerah Khusus Ibukota Jakarta");
+    }
+
+    #[test]
+    fn test_find_by_code_not_found() {
+        let conn = open().unwrap();
+        let v = find_by_code(&conn, "99.99.99.9999").unwrap();
+        assert!(v.is_none());
+    }
+
+    #[test]
+    fn test_find_by_code_prefix_kecamatan() {
+        let conn = open().unwrap();
+        let villages = find_by_code_prefix(&conn, "31.71.03", 100).unwrap();
+        assert!(
+            !villages.is_empty(),
+            "should find villages in kecamatan 31.71.03"
+        );
+        assert!(villages.iter().all(|v| v.code.starts_with("31.71.03")));
+        assert!(villages.iter().all(|v| v.district == "Kemayoran"));
+    }
+
+    #[test]
+    fn test_find_by_code_prefix_kabupaten() {
+        let conn = open().unwrap();
+        let villages = find_by_code_prefix(&conn, "31.71", 500).unwrap();
+        assert!(
+            !villages.is_empty(),
+            "should find villages in kabupaten 31.71"
+        );
+        assert!(villages.iter().all(|v| v.code.starts_with("31.71")));
+    }
+
+    #[test]
+    fn test_find_by_code_prefix_not_found() {
+        let conn = open().unwrap();
+        let villages = find_by_code_prefix(&conn, "99.99.99", 100).unwrap();
+        assert!(villages.is_empty());
     }
 
     #[test]
