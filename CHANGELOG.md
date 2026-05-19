@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## 0.3.0 - 2026-05-19
 
 ### Added
 
@@ -11,16 +11,18 @@ All notable changes to this project will be documented in this file.
 - `examples/verify_legacy.rs` — standalone verification tool
 - GitHub Release artifact distribution for pre-built database
 - `build.rs` modes: download (default) and pipeline (`WILAYAH_BUILD_PIPELINE=1`)
+- `build.rs` download fallback: fetches `locations.db` from GitHub Releases when not present locally
 
 ### Changed
 
-- Build process: default `cargo build` downloads pre-built DB from GitHub Releases instead of building from source
+- Build process: default `cargo build` downloads pre-built DB from GitHub Releases (instant builds)
 - Documentation updated for new architecture and build workflow
 - `cargo publish` now passes without writing outside `OUT_DIR`
 
 ### Fixed
 
 - Removed build-time verification from pipeline (now in standalone tool)
+- Fixed several build script issues to enable publishing
 
 ## 0.2.0 - 2026-05-18
 
