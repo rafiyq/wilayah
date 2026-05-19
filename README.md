@@ -3,9 +3,17 @@
 Location lookup for Indonesian villages by GPS coordinates or name.
 
 Returns BMKG-compatible `adm4` administrative codes (e.g., `31.71.03.1001`)
-for 83,758 villages across Indonesia, sourced from the official Kemendagri
-decree (Kepmendagri No 300.2.2-2138 Tahun 2025) with village centroids
-computed from BIG (Badan Informasi Geospasial) polygon boundaries.
+for **83,758 villages** across Indonesia, based on the official Kemendagri
+decree (Kepmendagri No 300.2.2-2138 Tahun 2025) with coordinates computed from
+BIG (Badan Informasi Geospasial) polygon boundaries.
+
+## Features
+
+- **Nearest village search** by GPS with Haversine distance
+- **Full-text search** (FTS5) across village name, district, city, province
+- **Exact code lookup** and hierarchical prefix queries
+- **Disambiguation helper** (`find_by_name_unique`) for unambiguous results
+- **Single portable binary** with embedded ~27 MB SQLite database (RTree spatial index)
 
 ## Quick start (library)
 
@@ -40,6 +48,13 @@ curl "http://localhost:3000/nearest?lat=-6.1647&lon=106.8453"
 curl "http://localhost:3000/search?q=Kemayoran"
 curl "http://localhost:3000/code?q=31.71.03.1001"
 curl "http://localhost:3000/code?prefix=31.71.03"
+```
+
+Alternatively, build and run the binary directly:
+
+```bash
+cargo build --release
+./target/release/examples/serve
 ```
 
 ## API
@@ -78,66 +93,103 @@ prefix returns `{"results": [...]}`.
 
 | | |
 |---|---|
-| **Administrative codes** | Kemendagri (Kepmendagri No 300.2.2-2138 Tahun 2025) |
-| **Village coordinates** | BIG polygon boundaries (computed centroids) |
-| **Villages** | 83,758 across 38 provinces (all Papua regions included) |
+| **Source** | Official Kemendagri PDF + BIG ArcGIS API |
+| **Decree** | Kepmendagri No 300.2.2-2138 Tahun 2025 |
+| **Villages** | 83,758 across all provinces (including Papua) |
+| **Database** | SQLite with RTree and FTS5 (~27 MB embedded) |
 | **License** | MIT |
 
-Data is sourced directly from official government sources:
-- Administrative codes: Kemendagri PDF decree
-- Village boundaries: BIG ArcGIS REST API (polygon geometries)
+Data pipeline (build-time only):
+- **Kemendagri PDF** (57 MB, 4,428 pages) → village codes and names via `pdftotext` parser
+- **BIG ArcGIS API** → village polygon geometries → centroid computation (84 batches, 83k+ features)
+- **Merge** → match by administrative code; fallback to kecamatan centroid for new villages (pemekaran)
+- **Build** → SQLite with indexes, RTree, FTS5, SHA-256 signature
 
-### Building
+## Building: download vs pipeline
 
-The first `cargo build` downloads the official Kemendagri PDF (~57 MB) and
-BIG village boundary data (~83K records), then builds a ~27 MB SQLite database.
-BIG data is cached locally, so subsequent builds complete in ~20 seconds.
-Requires network access on first build only.
+By default, `cargo build` downloads a pre-built database from the GitHub Releases
+artifact (no build-time dependencies needed). This gives instant builds.
 
-```bash
-cargo build          # downloads data, builds DB, compiles (~20s after cache)
-cargo build          # uses cached DB, instant
-```
-
-### Manually rebuilding the database
+To rebuild the database from scratch (e.g., for data updates or verification),
+use the `build_db` example:
 
 ```bash
-rm data/locations.db data/cache/big_villages.json -f
-cargo build          # downloads fresh data and rebuilds
+# Remove any cached database
+rm -rf data/cache data/locations.db
+
+# Run full pipeline (requires pdftotext, network access)
+cargo run --example build_db --features build-db
+
+# After it completes, you can build the library as usual
+cargo build
 ```
+
+Set `WILAYAH_REFRESH_BIG=1` to force re-fetch from BIG API:
+
+```bash
+WILAYAH_REFRESH_BIG=1 cargo run --example build_db --features build-db
+```
+
+The build script (`build.rs`) operates in two modes:
+
+- **Download mode** (default): copies `data/locations.db` if present, or downloads the
+  pre-built DB from the latest GitHub Release into `OUT_DIR`. This is what
+  normal `cargo build` does.
+- **Pipeline mode** (`WILAYAH_BUILD_PIPELINE=1`): runs the full data pipeline as
+  above and writes the result to `data/locations.db` (for release packaging).
 
 ### Environment variables
 
-| Variable | Description |
-|----------|-------------|
-| `WILAYAH_REFRESH_BIG=1` | Force re-fetch BIG village data from ArcGIS API |
-| `WILAYAH_VERIFY_VERBOSE=1` | Print detailed verification report comparing official vs legacy data |
+| Variable | Effect |
+|----------|--------|
+| `WILAYAH_BUILD_PIPELINE=1` | Run full data pipeline during `cargo build` (rarely needed) |
+| `WILAYAH_REFRESH_BIG=1` | Force re-fetch BIG data from ArcGIS API (pipeline only) |
+| `WILAYAH_VERIFY_VERBOSE=1` | Print detailed verification in comparison tool |
 
 ## Architecture
 
-- **Crate:** `wilayah` — SQLite + RTree + FTS5 + Haversine (single library crate)
-- **HTTP server:** `examples/serve.rs` — axum HTTP server wrapping the library
-- **Database:** SQLite (embedded via `include_bytes!`, ~27 MB)
-- **Deployment:** `cargo run --release --example serve` → ~25 MB binary, zero runtime deps
+### Components
+
+- **Library** `src/lib.rs`: public API (`open`, `find_nearest`, `find_by_name`, etc.)
+- **Database layer** `src/db.rs`: SQLite access (RTree, FTS5)
+- **Pipeline** `src/pipeline.rs`: full data build process (PDF → BIG → DB)
+- **Build script** `build.rs`: download-or-build shim (uses `#[path]` to reuse pipeline)
+- **Examples**:
+  - `serve` — axum HTTP API server (default)
+  - `build_db` — CLI wrapper for `Pipeline` (requires `build-db` feature)
+  - `verify_legacy` — compare official DB with legacy snapshot (no feature needed)
+
+### Build flow
 
 ```text
-wilayah (library)
-├── open() → embedded SQLite connection
-├── find_nearest() → RTree spatial index + Haversine distance
-├── find_by_name() → FTS5 full-text search (BM25 ranked)
-├── find_by_name_unique() → disambiguation helper (Display-friendly)
-├── find_by_code() → direct lookup by administrative code
-├── find_by_code_prefix() → hierarchical lookup (kecamatan/kabupaten/province)
-├── data_info() → source, decree, version, build date
-└── village_count() → total villages in database
+cargo build (default) → build.rs (download mode) → copy/Download DB → embed
+cargo build WILAYAH_BUILD_PIPELINE=1 → build.rs (pipeline mode) → run Pipeline → copy to data/ → embed
+cargo run --example build_db --features build-db → Pipeline.run() → build_db
+cargo run --example verify_legacy → compare embedded DB vs data/cache/legacy_snapshot.json
 ```
 
-Data pipeline (build-time only)
-├── PDF extraction → pdftotext → state machine parser
-├── BIG API → ArcGIS REST → polygon centroid computation
-├── Merge → PDF codes + BIG coordinates
-└── Verification → cross-reference with legacy data
+The pipeline code is **single source of truth**: both the build script and the
+`build_db` example use the exact same `Pipeline` struct via `#[path]` import.
+
+## Verification
+
+The verification tool compares the current database with the legacy community-sourced
+dataset (cahyadsn/wilayah) and prints a report:
+
+```bash
+cargo run --example verify_legacy
 ```
+
+Output includes:
+- New villages (present in official but not legacy)
+- Missing villages (present in legacy but not official)
+- Name differences
+- Coordinate drift > 1km
+- Hierarchy differences (district/city/province)
+
+The verification code is **not part of the build**. The legacy snapshot is
+generated automatically on first official pipeline run and saved to
+`data/cache/legacy_snapshot.json`.
 
 ## Disambiguation
 
@@ -150,19 +202,6 @@ Data pipeline (build-time only)
 | `NotFound` | `"No matching village found"` |
 
 Both [`Village`](https://docs.rs/wilayah/latest/wilayah/struct.Village.html) and `LookupResult` implement `Display` and `serde::Serialize`.
-
-## Verification
-
-The official data pipeline includes automatic verification against the legacy
-community-sourced data (cahyadsn/wilayah). On first official build, a snapshot
-of the legacy data is saved. Subsequent builds compare official data against
-this snapshot and print a summary report:
-
-- New villages: present in official but not legacy (2025 pemekaran)
-- Missing villages: present in legacy but not official (potential data loss)
-- Name differences: same code, different village name
-- Coordinate drift: BIG vs legacy centroid distance > 1km
-- Hierarchy differences: different district/city/province assignment
 
 ## License
 

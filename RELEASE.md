@@ -3,30 +3,29 @@
 ## Prerequisites
 
 - `pdftotext` installed (`apt install poppler-utils` or `brew install poppler`)
-- Network access (fetches data on first build)
+- `gh` CLI installed and authenticated
+- Network access
 
 ## Steps
 
 1. **Update version**
 
-   ```bash
-   # Edit version in Cargo.toml
-   $EDITOR Cargo.toml
-   ```
+   Edit `Cargo.toml` to set the new version.
 
 2. **Rebuild database from scratch**
 
    ```bash
-   rm -f data/locations.db data/cache/big_villages.json
-   WILAYAH_REFRESH_BIG=1 cargo build --release
+   rm -rf data/cache data/locations.db
+   cargo run --example build_db --features build-db
    ```
 
    This runs the full pipeline:
-   - Downloads Kemendagri PDF (SHA-256 verified)
-   - Fetches BIG polygon centroids from ArcGIS API (~84 batches)
-   - Merges and validates data
+   - Downloads Kemendagri PDF (~57 MB)
+   - Extracts text (~4,428 pages)
+   - Fetches BIG polygon centroids from ArcGIS API (~84 batches, 83k+ villages)
+   - Merges and validates data (pemekaran detection, kecamatan centroid fallback)
    - Builds SQLite database with RTree + FTS5
-   - Verifies against legacy snapshot (if available)
+   - Prints SHA-256, village count
 
 3. **Run tests**
 
@@ -50,13 +49,20 @@
    cargo publish
    ```
 
-6. **Create GitHub release**
+6. **Create GitHub release with database artifact**
 
    ```bash
    gh release create "v<version>" \
      --title "v<version>" \
-     --notes "See changelog"
+     --notes "See CHANGELOG.md for details."
+   gh release upload "v<version>" data/locations.db
    ```
+
+   The pre-built database is not committed to the repository; it is distributed via GitHub Releases.
+
+## Post-release
+
+The build script (`build.rs`) will automatically download the database from the latest GitHub Release on `cargo build` for downstream users, eliminating the need to ship the ~27 MB DB in the source tree.
 
 ## Versioning
 

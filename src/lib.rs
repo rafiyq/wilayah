@@ -17,20 +17,31 @@
 //!
 //! # Data
 //!
-//! Sourced from [cahyadsn/wilayah](https://github.com/cahyadsn/wilayah) and
-//! [cahyadsn/wilayah_boundaries](https://github.com/cahyadsn/wilayah_boundaries).
+//! Sourced from the official Kemendagri (Ministry of Home Affairs) PDF
+//! publication of all Indonesian villages, combined with village polygon
+//! boundaries from BIG (Badan Informasi Geospasial) ArcGIS service. The data is
+//! processed through a reproducible build pipeline to produce a SQLite database
+//! with RTree spatial index and FTS5 full-text search. The database is embedded
+//! into the binary at compile time via a build script.
 //!
-//! On first `cargo build`, the raw data is downloaded from GitHub and a SQLite
-//! database with RTree spatial index and FTS5 full-text search is built. The
-//! database is embedded into the binary at compile time. Subsequent builds
-//! reuse the cached database.
+//! On first `cargo build`, the build script either downloads a pre-built
+//! database from the GitHub Releases (default) or runs the full pipeline if
+//! `WILAYAH_BUILD_PIPELINE=1` is set. Subsequent builds reuse the cached
+//! database located at `data/locations.db`.
 //!
-//! To build offline, set `WILAYAH_DATA_DIR` to a directory containing
-//! `wilayah.sql` and `kel/*.sql` files downloaded from the upstream repos.
+//! To build from scratch, set `WILAYAH_BUILD_PIPELINE=1` and run:
+//!
+//! ```bash
+//! cargo run --example build_db --features build-db
+//! ```
 
 #![deny(missing_docs)]
 
 mod db;
+
+#[cfg(feature = "build-db")]
+#[allow(missing_docs)]
+pub mod pipeline;
 
 pub use db::{
     by_code, by_code_prefix, nearest, open_embedded, search, search_unique, LookupResult, Village,
@@ -43,7 +54,7 @@ pub use db::{
 /// the database was built.
 #[derive(Debug, Clone)]
 pub struct DataInfo {
-    /// The upstream data source (e.g., `"cahyadsn/wilayah_boundaries"`).
+    /// The upstream data source (e.g., `"official"`).
     pub source: &'static str,
     /// The government decree this data is based on
     /// (e.g., `"Kepmendagri No 300.2.2-2430 Tahun 2025"`).
@@ -298,7 +309,7 @@ mod tests {
 
     #[test]
     fn test_version() {
-        assert_eq!(version(), "0.1.0");
+        assert_eq!(version(), "0.2.0");
     }
 
     #[test]

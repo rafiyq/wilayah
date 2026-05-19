@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- `pipeline` module (feature-gated behind `build-db`) — full data build process as reusable library
+- `examples/build_db.rs` — CLI wrapper for pipeline
+- `examples/verify_legacy.rs` — standalone verification tool
+- GitHub Release artifact distribution for pre-built database
+- `build.rs` modes: download (default) and pipeline (`WILAYAH_BUILD_PIPELINE=1`)
+
+### Changed
+
+- Build process: default `cargo build` downloads pre-built DB from GitHub Releases instead of building from source
+- Documentation updated for new architecture and build workflow
+- `cargo publish` now passes without writing outside `OUT_DIR`
+
+### Fixed
+
+- Removed build-time verification from pipeline (now in standalone tool)
+
 ## 0.2.0 - 2026-05-18
 
 ### Added

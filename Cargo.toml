@@ -14,6 +14,12 @@ readme = "README.md"
 rusqlite = { version = "0.39", features = ["functions", "serialize", "bundled"] }
 serde = { version = "1", features = ["derive"] }
 
+# Optional dependencies for the build-db feature (pipeline)
+ureq = { version = "2", optional = true }
+regex = { version = "1", optional = true }
+serde_json = { version = "1", optional = true }
+sha2 = { version = "0.10", optional = true }
+
 [build-dependencies]
 rusqlite = { version = "0.39", features = ["serialize", "bundled"] }
 ureq = "2"
@@ -29,3 +35,17 @@ tower-http = { version = "0.6", features = ["cors"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tempfile = "3"
+
+[features]
+build-db = ["ureq", "regex", "serde_json", "sha2"]
+
+# Examples are automatically included; no need to explicitly list unless you want custom names or settings
+[[example]]
+name = "build_db"
+path = "examples/build_db.rs"
+required-features = ["build-db"]
+
+[[example]]
+name = "verify_legacy"
+path = "examples/verify_legacy.rs"
+# No required-features; uses only library API

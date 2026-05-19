@@ -28,6 +28,13 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.toml') }}
           restore-keys: ${{ runner.os }}-cargo-
 
+      - name: Restore pre-built database cache
+        uses: actions/cache@v4
+        with:
+          path: data
+          key: ${{ runner.os }}-data-${{ hashFiles('Cargo.toml') }}
+          restore-keys: ${{ runner.os }}-data-
+
       - run: cargo fmt --check
       - run: cargo clippy -- -D warnings
       - run: cargo test
@@ -52,12 +59,15 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y poppler-utils
 
       - name: Remove cached data
-        run: rm -f data/locations.db data/cache/big_villages.json
+        run: rm -rf data/cache data/locations.db
 
-      - name: Full pipeline build
-        run: cargo build --release
+      - name: Build database from pipeline
+        run: cargo run --example build_db --features build-db
         env:
           WILAYAH_REFRESH_BIG: "1"
 
       - name: Run tests
         run: cargo test
+
+      - name: Build release binary
+        run: cargo build --release

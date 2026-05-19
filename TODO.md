@@ -23,3 +23,14 @@
 
 ## Data quality
 - [x] Expand PDF annotation keyword stripping — added `Koreksi`, `Penggabungan`, `Pembentukan`, `Penetapan`, `Perubahan`, `Peningkatan`, `Pemecahan`, `Nagari hasil`, case variants, and space-prefixed `hasil`/`Hasil`
+
+## Build System Restructure (Completed)
+
+- [x] Split pipeline from `build.rs` into `src/pipeline.rs`
+- [x] Add `build-db` feature to gate pipeline dependencies
+- [x] Rewrite `build.rs` to support download mode (default) and pipeline mode (`WILAYAH_BUILD_PIPELINE=1`)
+- [x] Add `examples/build_db.rs` CLI wrapper for pipeline
+- [x] Add `examples/verify_legacy.rs` standalone verification tool
+- [x] Distribute pre-built DB via GitHub Release (download in build.rs)
+- [x] Update CI to use `build_db` example for fresh build
+- [x] Update `RELEASE.md` and `README.md` with new workflow
