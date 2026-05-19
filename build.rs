@@ -22,12 +22,11 @@ fn main() {
 
     let village_count = if pipeline_enabled {
         eprintln!("Pipeline mode: running official build...");
+        // Pipeline writes directly to OUT_DIR; output path is db_path
         let output = pipeline::Pipeline::new()
-            .output(&data_db)
+            .output(&db_path)
             .run()
             .expect("Pipeline failed");
-        // Copy result to OUT_DIR for cargo
-        fs::copy(&data_db, &db_path).expect("failed to copy DB to OUT_DIR");
         output.village_count as u32
     } else if db_path.exists() {
         village_count_from_db(&db_path)
@@ -38,12 +37,7 @@ fn main() {
         // Try to download pre-built database from GitHub Releases
         eprintln!("Downloading pre-built database from GitHub Releases...");
         match download_latest_db(&db_path) {
-            Ok(()) => {
-                // Also cache for future builds
-                let _ = fs::create_dir_all("data");
-                let _ = fs::copy(&db_path, &data_db);
-                village_count_from_db(&db_path)
-            }
+            Ok(()) => village_count_from_db(&db_path),
             Err(e) => {
                 panic!(
                     "Failed to download pre-built database: {}\n\
