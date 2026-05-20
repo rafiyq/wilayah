@@ -43,7 +43,8 @@ mod db;
 pub mod pipeline;
 
 pub use db::{
-    by_code, by_code_prefix, nearest, open_embedded, search, search_unique, LookupResult, Village,
+    by_code, by_code_prefix, nearest, open_embedded, search, search_unique, LookupResult,
+    PrefixResult, Village,
 };
 
 /// Metadata about the embedded location database.
@@ -241,35 +242,35 @@ pub fn find_by_code(conn: &rusqlite::Connection, code: &str) -> rusqlite::Result
     db::by_code(conn, code)
 }
 
-/// Find all villages matching an administrative code prefix.
+/// Find all villages matching an administrative code prefix with pagination.
 ///
 /// Useful for listing all villages in a kecamatan (`"31.71.03"`),
-/// kabupaten (`"31.71"`), or province (`"31"`). Returns villages
-/// ordered by code, up to `limit` results.
+/// kabupaten (`"31.71"`), or province (`"31"`). Returns a paginated
+/// result with total count and a `has_more` flag.
 ///
 /// # Arguments
 ///
 /// * `conn` - Database connection from [`open()`]
 /// * `prefix` - Code prefix (e.g., `"31.71.03"`, `"31.71"`, `"31"`)
-/// * `limit` - Maximum number of results (clamped to 1..1000)
+/// * `limit` - Maximum number of results per page (clamped to 1..1000)
+/// * `offset` - Number of results to skip (for pagination)
 ///
 /// # Example
 ///
 /// ```
 /// let conn = wilayah::open()?;
-/// let villages = wilayah::find_by_code_prefix(&conn, "31.71.03", 100)?;
-/// assert!(!villages.is_empty());
-/// for v in &villages {
-///     assert!(v.code.starts_with("31.71.03"));
-/// }
+/// let result = wilayah::find_by_code_prefix(&conn, "31.71.03", 100, 0)?;
+/// assert!(!result.villages.is_empty());
+/// assert_eq!(result.total, result.villages.len() as usize); // all fit in one page
 /// # Ok::<_, rusqlite::Error>(())
 /// ```
 pub fn find_by_code_prefix(
     conn: &rusqlite::Connection,
     prefix: &str,
     limit: usize,
-) -> rusqlite::Result<Vec<Village>> {
-    db::by_code_prefix(conn, prefix, limit)
+    offset: usize,
+) -> rusqlite::Result<PrefixResult> {
+    db::by_code_prefix(conn, prefix, limit, offset)
 }
 
 /// Get the total number of villages in the database.
@@ -308,7 +309,7 @@ mod tests {
 
     #[test]
     fn test_version() {
-        assert_eq!(version(), "0.3.0");
+        assert_eq!(version(), "0.4.0");
     }
 
     #[test]
@@ -404,31 +405,42 @@ mod tests {
     #[test]
     fn test_find_by_code_prefix_kecamatan() {
         let conn = open().unwrap();
-        let villages = find_by_code_prefix(&conn, "31.71.03", 100).unwrap();
+        let result = find_by_code_prefix(&conn, "31.71.03", 100, 0).unwrap();
         assert!(
-            !villages.is_empty(),
+            !result.villages.is_empty(),
             "should find villages in kecamatan 31.71.03"
         );
-        assert!(villages.iter().all(|v| v.code.starts_with("31.71.03")));
-        assert!(villages.iter().all(|v| v.district == "Kemayoran"));
+        assert!(result
+            .villages
+            .iter()
+            .all(|v| v.code.starts_with("31.71.03")));
+        assert!(result.villages.iter().all(|v| v.district == "Kemayoran"));
+        // All villages should fit in one page, so has_more is false.
+        assert_eq!(result.total, result.villages.len());
+        assert!(!result.has_more);
     }
 
     #[test]
     fn test_find_by_code_prefix_kabupaten() {
         let conn = open().unwrap();
-        let villages = find_by_code_prefix(&conn, "31.71", 500).unwrap();
+        let result = find_by_code_prefix(&conn, "31.71", 500, 0).unwrap();
         assert!(
-            !villages.is_empty(),
+            !result.villages.is_empty(),
             "should find villages in kabupaten 31.71"
         );
-        assert!(villages.iter().all(|v| v.code.starts_with("31.71")));
+        assert!(result.villages.iter().all(|v| v.code.starts_with("31.71")));
+        assert!(result.total > 0);
+        // Consistency: has_more should be true if there are more beyond this page.
+        assert_eq!(result.has_more, result.villages.len() < result.total);
     }
 
     #[test]
     fn test_find_by_code_prefix_not_found() {
         let conn = open().unwrap();
-        let villages = find_by_code_prefix(&conn, "99.99.99", 100).unwrap();
-        assert!(villages.is_empty());
+        let result = find_by_code_prefix(&conn, "99.99.99", 100, 0).unwrap();
+        assert!(result.villages.is_empty());
+        assert_eq!(result.total, 0);
+        assert!(!result.has_more);
     }
 
     #[test]

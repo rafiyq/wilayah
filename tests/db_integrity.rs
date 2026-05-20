@@ -1,5 +1,5 @@
 use regex::Regex;
-use wilayah::{find_by_code, find_by_code_prefix, find_by_name, open, village_count, Village};
+use wilayah::{find_by_code, find_by_code_prefix, find_by_name, open, village_count};
 
 #[test]
 fn test_db_has_many_villages() {
@@ -105,7 +105,10 @@ fn test_find_by_code_known() {
 fn test_find_by_code_prefix_province() {
     let conn = open().unwrap();
     // Prefix "31" should return many villages (all in DKI Jakarta province)
-    let villages = find_by_code_prefix(&conn, "31", 100).unwrap();
-    assert!(!villages.is_empty());
-    assert!(villages.iter().all(|v| v.code.starts_with("31")));
+    let result = find_by_code_prefix(&conn, "31", 100, 0).unwrap();
+    assert!(!result.villages.is_empty());
+    assert!(result.villages.iter().all(|v| v.code.starts_with("31")));
+    // Province-level query should exceed the limit, demonstrating pagination need
+    assert!(result.total > 100);
+    assert!(result.has_more);
 }

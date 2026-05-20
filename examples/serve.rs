@@ -49,6 +49,8 @@ struct CodeParams {
     prefix: Option<String>,
     #[serde(default = "default_code_prefix_limit")]
     limit: usize,
+    #[serde(default = "default_offset")]
+    offset: usize,
 }
 
 fn default_limit() -> usize {
@@ -57,6 +59,10 @@ fn default_limit() -> usize {
 
 fn default_code_prefix_limit() -> usize {
     100
+}
+
+fn default_offset() -> usize {
+    0
 }
 
 #[derive(Serialize)]
@@ -79,6 +85,8 @@ struct CodeResponse {
 #[derive(Serialize)]
 struct CodePrefixResponse {
     results: Vec<Village>,
+    total: usize,
+    has_more: bool,
 }
 
 #[derive(Serialize)]
@@ -185,8 +193,9 @@ async fn code(
             ));
         }
         let limit = params.limit.clamp(1, 1000);
-        info!("code: prefix lookup for {} (limit={})", prefix, limit);
-        let results = find_by_code_prefix(&db, prefix, limit).map_err(|e| {
+        let offset = params.offset;
+        info!("code: prefix lookup for {} (limit={}, offset={})", prefix, limit, offset);
+        let result = find_by_code_prefix(&db, prefix, limit, offset).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
@@ -194,7 +203,11 @@ async fn code(
                 }),
             )
         })?;
-        return Ok(Json(serde_json::to_value(CodePrefixResponse { results }).unwrap()));
+        return Ok(Json(serde_json::to_value(CodePrefixResponse {
+            results: result.villages,
+            total: result.total,
+            has_more: result.has_more,
+        }).unwrap()));
     }
     Err((
         StatusCode::BAD_REQUEST,

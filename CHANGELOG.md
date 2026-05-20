@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.4.0 - 2026-05-20
+
+### Added
+
+- `find_by_code_prefix` now supports pagination with `offset` parameter and returns `PrefixResult` containing `total` and `has_more` (breaking change)
+
+### Changed
+
+- `find_by_code_prefix` return type changed from `Vec<Village>` to `PrefixResult`
+- `find_by_code_prefix` signature now includes `offset: usize` parameter
+
 ## 0.3.0 - 2026-05-19
 
 ### Added

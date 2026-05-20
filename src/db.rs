@@ -146,30 +146,70 @@ pub fn by_code(conn: &Connection, code: &str) -> Result<Option<Village>> {
     }
 }
 
-/// Lookup all villages matching an administrative code prefix (e.g., `"31.71.03"`).
-pub fn by_code_prefix(conn: &Connection, prefix: &str, limit: usize) -> Result<Vec<Village>> {
+/// Lookup all villages matching an administrative code prefix with pagination.
+///
+/// Useful for listing all villages in a kecamatan (`"31.71.03"`),
+/// kabupaten (`"31.71"`), or province (`"31"`). Returns a paginated
+/// result with total count and a `has_more` flag.
+///
+/// # Arguments
+///
+/// * `conn` - Database connection
+/// * `prefix` - Code prefix (e.g., `"31.71.03"`, `"31.71"`, `"31"`)
+/// * `limit` - Maximum number of results per page (clamped to 1..1000)
+/// * `offset` - Number of results to skip (for pagination)
+///
+/// Returns a `PrefixResult` containing villages, total count, and pagination flag.
+pub fn by_code_prefix(
+    conn: &Connection,
+    prefix: &str,
+    limit: usize,
+    offset: usize,
+) -> Result<PrefixResult> {
     let limit = limit.clamp(1, 1000);
     let pattern = format!("{}%", prefix);
+
+    // Get total count (COUNT(*) returns i64, cast to usize)
+    let total_i64: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM locations WHERE kode LIKE ?1",
+        [&pattern],
+        |row| row.get(0),
+    )?;
+    let total = total_i64 as usize;
+
+    // Get page of results
     let mut stmt = conn.prepare_cached(
         "SELECT kode, nama, kecamatan, kota, provinsi, lat, lon
          FROM locations
          WHERE kode LIKE ?1
          ORDER BY kode
-         LIMIT ?2",
+         LIMIT ?2
+         OFFSET ?3",
     )?;
-    let rows = stmt.query_map(rusqlite::params![pattern, limit as i64], |row| {
-        Ok(Village {
-            code: row.get(0)?,
-            name: row.get(1)?,
-            district: row.get(2)?,
-            city: row.get(3)?,
-            province: row.get(4)?,
-            lat: row.get(5)?,
-            lon: row.get(6)?,
-            dist_km: None,
-        })
-    })?;
-    rows.collect()
+    let rows = stmt.query_map(
+        rusqlite::params![pattern, limit as i64, offset as i64],
+        |row| {
+            Ok(Village {
+                code: row.get(0)?,
+                name: row.get(1)?,
+                district: row.get(2)?,
+                city: row.get(3)?,
+                province: row.get(4)?,
+                lat: row.get(5)?,
+                lon: row.get(6)?,
+                dist_km: None,
+            })
+        },
+    )?;
+    let villages: Vec<Village> = rows.collect::<Result<Vec<_>>>()?;
+
+    let has_more = offset + villages.len() < total;
+
+    Ok(PrefixResult {
+        villages,
+        total,
+        has_more,
+    })
 }
 
 /// Search for a single unique village by name.
@@ -243,6 +283,28 @@ impl fmt::Display for LookupResult {
             }
             LookupResult::NotFound => write!(f, "No matching village found"),
         }
+    }
+}
+
+/// Paginated result from a code prefix lookup.
+pub struct PrefixResult {
+    /// The villages in this page of results.
+    pub villages: Vec<Village>,
+    /// Total number of villages matching the prefix.
+    pub total: usize,
+    /// Whether more results exist beyond this page.
+    pub has_more: bool,
+}
+
+impl fmt::Display for PrefixResult {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} result(s), total: {}, has_more: {}",
+            self.villages.len(),
+            self.total,
+            self.has_more,
+        )
     }
 }
 
