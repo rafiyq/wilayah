@@ -40,7 +40,6 @@
 mod db;
 
 #[cfg(feature = "build-db")]
-#[allow(missing_docs)]
 pub mod pipeline;
 
 pub use db::{

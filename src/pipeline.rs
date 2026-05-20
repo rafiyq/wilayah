@@ -1,18 +1,49 @@
+//! Build pipeline for constructing the `wilayah` location database.
+//!
+//! This module provides an end-to-end pipeline that:
+//! 1. Downloads the official Kemendagri PDF listing all Indonesian villages
+//! 2. Extracts and parses village records from the PDF text
+//! 3. Fetches village polygon boundaries from the BIG ArcGIS API and computes centroids
+//! 4. Merges the data, using kecamatan centroids as fallback for new villages
+//! 5. Builds a SQLite database with RTree spatial index and FTS5 full-text search
+//!
+//! # Example
+//!
+//! ```no_run
+//! use wilayah::pipeline::Pipeline;
+//!
+//! let output = Pipeline::new()
+//!     .output(std::path::Path::new("data/locations.db"))
+//!     .run()
+//!     .expect("pipeline failed");
+//!
+//! println!("Built database with {} villages", output.village_count);
+//! ```
+//!
+//! The pipeline is designed to be reproducible and transparent, sourcing data from
+//! official government publications and APIs. The resulting database is embedded
+//! into the `wilayah` crate at compile time via the build script.
+
 use rusqlite::Connection;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// The government decree number and year that the Kemendagri PDF data is based on.
 pub const DATA_DECREE: &str = "Kepmendagri No 300.2.2-2138 Tahun 2025";
 
 const PDF_URL: &str =
     "https://drive.google.com/uc?export=download&id=1o_m621D00TtwCwQMLn8XUnV3nolamPDm";
 const BIG_API_URL: &str =
     "https://geoservices.big.go.id/gis/rest/services/BAPANAS/Batas_Administrasi/MapServer/2/query";
-const BIG_CACHE: &str = "data/cache/big_villages.json";
 const BIG_BATCH_SIZE: usize = 1000;
 
 type VillageTuple = (String, String, String, String, String, f64, f64);
 
+/// Error type returned when a pipeline step fails.
+///
+/// Contains a descriptive error message indicating what went wrong during
+/// the pipeline execution (e.g., download failure, parsing error, database
+/// creation failure).
 #[derive(Debug)]
 pub struct PipelineError(String);
 
@@ -24,12 +55,23 @@ impl std::fmt::Display for PipelineError {
 
 impl std::error::Error for PipelineError {}
 
+/// Output of a successful pipeline run.
+#[allow(dead_code)]
 pub struct PipelineOutput {
+    /// Path to the built SQLite database file.
     pub db_path: PathBuf,
+    /// Number of villages in the database.
     pub village_count: usize,
+    /// SHA-256 hash of the database file, in hexadecimal.
     pub sha256: String,
 }
 
+/// Builder for configuring and running the database build pipeline.
+///
+/// The pipeline fetches data from official sources (Kemendagri PDF and BIG ArcGIS API),
+/// merges and validates it, then constructs a SQLite database with RTree and FTS5
+/// indexes. The resulting database is used by the `wilayah` crate at compile time.
+#[allow(dead_code)]
 pub struct Pipeline {
     pdf_url: String,
     big_api_url: String,
@@ -39,7 +81,20 @@ pub struct Pipeline {
     force_refresh_big: bool,
 }
 
+#[allow(dead_code)]
 impl Pipeline {
+    /// Creates a new `Pipeline` with default configuration.
+    ///
+    /// Defaults:
+    /// - PDF URL: Kemendagri official PDF from Google Drive
+    /// - BIG API URL: `https://geoservices.big.go.id/...`
+    /// - Cache directory: `data/cache` (relative to current working directory)
+    /// - Output database: `data/locations.db`
+    /// - Decree: `DATA_DECREE` constant
+    /// - `force_refresh_big`: `false`
+    ///
+    /// To change any of these, use the builder methods (`pdf_url()`, `cache_dir()`,
+    /// etc.) before calling `run()`.
     pub fn new() -> Self {
         Self {
             pdf_url: PDF_URL.to_string(),
@@ -51,36 +106,72 @@ impl Pipeline {
         }
     }
 
+    /// Overrides the default Kemendagri PDF download URL.
+    ///
+    /// The URL should point to a PDF file containing the official village listing.
+    /// The default is the Google Drive link used by the Ministry of Home Affairs.
     pub fn pdf_url(mut self, url: &str) -> Self {
         self.pdf_url = url.to_string();
         self
     }
 
+    /// Overrides the default BIG (Badan Informasi Geospasial) ArcGIS API endpoint.
+    ///
+    /// The pipeline queries this service for village polygon boundaries and computes
+    /// centroids. The default is the public BAPANAS service.
     pub fn big_api_url(mut self, url: &str) -> Self {
         self.big_api_url = url.to_string();
         self
     }
 
+    /// Sets the directory where intermediate files are cached.
+    ///
+    /// This includes the downloaded PDF (`kemendagri.pdf`) and cached BIG data
+    /// (`big_villages.json`). The directory is created if it does not exist.
     pub fn cache_dir(mut self, dir: &Path) -> Self {
         self.cache_dir = dir.to_path_buf();
         self
     }
 
+    /// Sets the output path for the final SQLite database.
+    ///
+    /// This file will be overwritten if it already exists. The parent directory
+    /// must be writable.
     pub fn output(mut self, path: &Path) -> Self {
         self.output = path.to_path_buf();
         self
     }
 
+    /// Overrides the government decree string stored in the database metadata.
+    ///
+    /// This value is for informational purposes only and appears in `DataInfo`.
+    /// The default is `DATA_DECREE`.
     pub fn decree(mut self, decree: &str) -> Self {
         self.decree = decree.to_string();
         self
     }
 
+    /// Forces re-downloading BIG API data even if a cached copy exists.
+    ///
+    /// By default, the pipeline uses the cached `big_villages.json` if present.
+    /// Set this to `true` to fetch fresh data from the API.
     pub fn force_refresh_big(mut self, yes: bool) -> Self {
         self.force_refresh_big = yes;
         self
     }
 
+    /// Executes the full pipeline.
+    ///
+    /// Steps:
+    /// 1. Ensure Kemendagri PDF is downloaded (cached if already present)
+    /// 2. Extract text from PDF using `pdftotext`
+    /// 3. Parse village records from the extracted text
+    /// 4. Fetch BIG polygon data (cached or fresh with retries)
+    /// 5. Merge villages with coordinates, using kecamatan centroids as fallback
+    /// 6. Build the SQLite database with indexes and optimize
+    /// 7. Compute SHA-256 of the final database
+    ///
+    /// Returns `PipelineOutput` on success, or `PipelineError` if any step fails.
     pub fn run(self) -> Result<PipelineOutput, PipelineError> {
         eprintln!("Starting pipeline...");
 
@@ -103,6 +194,12 @@ impl Pipeline {
             village_count,
             sha256,
         })
+    }
+}
+
+impl Default for Pipeline {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
