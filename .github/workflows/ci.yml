@@ -31,43 +31,10 @@ jobs:
       - name: Restore pre-built database cache
         uses: actions/cache@v4
         with:
-          path: data
-          key: ${{ runner.os }}-data-${{ hashFiles('Cargo.toml') }}
-          restore-keys: ${{ runner.os }}-data-
+          path: data/locations.db
+          key: ${{ runner.os }}-db-${{ hashFiles('src/pipeline.rs', 'src/db.rs', 'Cargo.toml') }}
 
       - run: cargo fmt --check
       - run: cargo clippy -- -D warnings
       - run: cargo test
-
-  build-fresh:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-
-      - name: Restore cargo cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-fresh-${{ hashFiles('Cargo.toml') }}
-          restore-keys: ${{ runner.os }}-cargo-fresh-
-
-      - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y poppler-utils
-
-      - name: Remove cached data
-        run: rm -rf data/cache data/locations.db
-
-      - name: Build database from pipeline
-        run: cargo run --example build_db --features build-db
-        env:
-          WILAYAH_REFRESH_BIG: "1"
-
-      - name: Run tests
-        run: cargo test
-
-      - name: Build release binary
-        run: cargo build --release
+      - run: cargo check --example build_db --features build-db

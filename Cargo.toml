@@ -35,6 +35,7 @@ tower-http = { version = "0.6", features = ["cors"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tempfile = "3"
+regex = "1"
 
 [features]
 build-db = ["ureq", "regex", "serde_json", "sha2"]
