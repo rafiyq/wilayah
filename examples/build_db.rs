@@ -1,8 +1,11 @@
+use rusqlite::Connection;
+use serde_json::{json, Value};
 use wilayah::pipeline::Pipeline;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mut pipeline = Pipeline::new();
+    let mut save_legacy_snapshot = false;
 
     // Parse simple flags (not using clap for minimalism)
     let mut i = 1;
@@ -48,6 +51,10 @@ fn main() {
                 pipeline = pipeline.force_refresh_big(true);
                 i += 1;
             }
+            "--save-legacy-snapshot" => {
+                save_legacy_snapshot = true;
+                i += 1;
+            }
             _ => {
                 eprintln!("warning: unknown argument: {}", args[i]);
                 i += 1;
@@ -61,6 +68,14 @@ fn main() {
             println!("Database: {}", output.db_path.display());
             println!("Villages: {}", output.village_count);
             println!("SHA-256: {}", output.sha256);
+
+            if save_legacy_snapshot {
+                if let Err(e) = save_legacy_snapshot_to(&output.db_path) {
+                    eprintln!("Failed to save legacy snapshot: {}", e);
+                    std::process::exit(1);
+                }
+            }
+
             std::process::exit(0);
         }
         Err(e) => {
@@ -68,4 +83,35 @@ fn main() {
             std::process::exit(1);
         }
     }
+}
+
+fn save_legacy_snapshot_to(db_path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    let conn = Connection::open(db_path)?;
+
+    let mut stmt = conn.prepare(
+        "SELECT kode, nama, kecamatan, kota, provinsi, lat, lon FROM locations ORDER BY kode",
+    )?;
+
+    let mut snapshot = Vec::new();
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let village: Value = json!({
+            "code": row.get::<_, String>(0)?,
+            "name": row.get::<_, String>(1)?,
+            "district": row.get::<_, String>(2)?,
+            "city": row.get::<_, String>(3)?,
+            "province": row.get::<_, String>(4)?,
+            "lat": row.get::<_, f64>(5)?,
+            "lon": row.get::<_, f64>(6)?,
+        });
+        snapshot.push(village);
+    }
+
+    let snapshot_path = std::path::Path::new("data/cache/legacy_snapshot.json");
+    std::fs::create_dir_all(snapshot_path.parent().unwrap())?;
+    let file = std::fs::File::create(snapshot_path)?;
+    serde_json::to_writer_pretty(file, &snapshot)?;
+
+    eprintln!("Saved legacy snapshot to {}", snapshot_path.display());
+    Ok(())
 }
