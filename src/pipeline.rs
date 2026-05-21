@@ -903,3 +903,311 @@ fn download_with_sha256(url: &str) -> Result<DownloadResult, PipelineError> {
         max_retries, last_err
     )))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use regex::Regex;
+    use serde_json::json;
+    use std::fs;
+
+    #[test]
+    fn test_parse_section_header_with_city_and_province() {
+        let re = Regex::new(r"C\.\w+\.\d+\)\s+(.+)$").unwrap();
+        let line = "C.Kabupaten.1) Kabupaten Bogor Provinsi Jawa Barat";
+        let header = parse_section_header(line, &re);
+        assert!(header.is_some());
+        let h = header.unwrap();
+        assert_eq!(h.province, "Provinsi Jawa Barat");
+        assert_eq!(h.city, "Kabupaten Bogor");
+    }
+
+    #[test]
+    fn test_parse_section_header_province_only() {
+        let re = Regex::new(r"C\.\w+\.\d+\)\s+(.+)$").unwrap();
+        let line = "C.Provinsi.1) Provinsi DKI Jakarta";
+        let header = parse_section_header(line, &re);
+        assert!(header.is_some());
+        let h = header.unwrap();
+        assert_eq!(h.province, "Provinsi DKI Jakarta");
+        assert_eq!(h.city, "");
+    }
+
+    #[test]
+    fn test_parse_section_header_no_provinsi() {
+        let re = Regex::new(r"C\.\w+\.\d+\)\s+(.+)$").unwrap();
+        let line = "C.Kabupaten.1) Some text without Provinsi";
+        assert!(parse_section_header(line, &re).is_none());
+    }
+
+    #[test]
+    fn test_parse_section_header_no_match() {
+        let re = Regex::new(r"C\.\w+\.\d+\)\s+(.+)$").unwrap();
+        let line = "31.12.24.2002  ABADMULIA  KEC. BUKIT SARI";
+        assert!(parse_section_header(line, &re).is_none());
+    }
+
+    #[test]
+    fn test_extract_village_name_basic() {
+        let name_re = Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap();
+        let after_code = " 12 ABADIJAYA";
+        let name = extract_village_name(after_code, &name_re);
+        assert_eq!(name, Some("ABADIJAYA".to_string()));
+    }
+
+    #[test]
+    fn test_extract_village_name_multi_word() {
+        let name_re = Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap();
+        let after_code = " 12 SUKA MAJU";
+        let name = extract_village_name(after_code, &name_re);
+        assert_eq!(name, Some("SUKA MAJU".to_string()));
+    }
+
+    #[test]
+    fn test_extract_village_name_keyword_stripping() {
+        let name_re = Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap();
+        let after_code = " 15 SUKAMAJU KEMENANGAN Pemekaran menjadi SUKAMAJU";
+        let name = extract_village_name(after_code, &name_re);
+        assert_eq!(name, Some("SUKAMAJU KEMENANGAN".to_string()));
+    }
+
+    #[test]
+    fn test_extract_village_name_numeric_start() {
+        let name_re = Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap();
+        let after_code = " 20 5SAFARI Some text";
+        let name = extract_village_name(after_code, &name_re);
+        assert!(name.is_none());
+    }
+
+    #[test]
+    fn test_extract_village_name_empty() {
+        let name_re = Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap();
+        let after_code = " 30 ";
+        let name = extract_village_name(after_code, &name_re);
+        assert!(name.is_none());
+    }
+
+    #[test]
+    fn test_extract_village_name_truncate_to_four_words() {
+        let name_re = Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap();
+        let after_code = " 10 DESA SUKAMAJU KECAMATAN BUKIT SARI LAINNYA";
+        let name = extract_village_name(after_code, &name_re);
+        assert_eq!(name, Some("DESA SUKAMAJU KECAMATAN BUKIT".to_string()));
+    }
+
+    #[test]
+    fn test_polygon_centroid_square() {
+        let ring = vec![
+            json!([0.0, 0.0]),
+            json!([2.0, 0.0]),
+            json!([2.0, 2.0]),
+            json!([0.0, 2.0]),
+        ];
+        let (lat, lon) = polygon_centroid(&ring);
+        assert!((lat - 1.0).abs() < 1e-10);
+        assert!((lon - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_polygon_centroid_too_few_points() {
+        let ring = vec![json!([0.0, 0.0]), json!([1.0, 1.0])];
+        let (lat, lon) = polygon_centroid(&ring);
+        assert_eq!(lat, 0.0);
+        assert_eq!(lon, 0.0);
+    }
+
+    #[test]
+    fn test_polygon_centroid_collinear_fallback() {
+        let ring = vec![json!([0.0, 0.0]), json!([2.0, 2.0]), json!([4.0, 4.0])];
+        let (lat, lon) = polygon_centroid(&ring);
+        assert!((lat - 2.0).abs() < 1e-10);
+        assert!((lon - 2.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_compute_centroid_rings_format() {
+        let geom = json!({
+            "rings": [
+                [
+                    [100.0, -4.0],
+                    [100.0, -6.0],
+                    [102.0, -6.0],
+                    [102.0, -4.0],
+                    [100.0, -4.0]
+                ]
+            ]
+        });
+        let (lat, lon) = compute_centroid(&geom);
+        assert!((lat - -5.0).abs() < 0.1);
+        assert!((lon - 101.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_compute_centroid_coordinates_format() {
+        let geom = json!({
+            "coordinates": [
+                [
+                    [
+                        [100.0, 0.0],
+                        [101.0, 0.0],
+                        [101.0, 1.0],
+                        [100.0, 1.0],
+                        [100.0, 0.0]
+                    ]
+                ]
+            ]
+        });
+        let (lat, lon) = compute_centroid(&geom);
+        assert!((lat - 0.5).abs() < 0.1);
+        assert!((lon - 100.5).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_compute_centroid_empty() {
+        let geom = json!({});
+        let (lat, lon) = compute_centroid(&geom);
+        assert_eq!(lat, 0.0);
+        assert_eq!(lon, 0.0);
+    }
+
+    #[test]
+    fn test_merge_villages_match() {
+        let villages = vec![VillageRecord {
+            code: "31.71.03.1001".to_string(),
+            name: "Kemayoran".to_string(),
+            district: "Kemayoran".to_string(),
+            city: "Jakarta Pusat".to_string(),
+            province: "Jakarta".to_string(),
+        }];
+        let big_data = vec![BigRecord {
+            code: "31.71.03.1001".to_string(),
+            name: "Kemayoran".to_string(),
+            district: "Kemayoran".to_string(),
+            city: "Jakarta Pusat".to_string(),
+            province: "Jakarta".to_string(),
+            lat: -6.1647,
+            lon: 106.8453,
+        }];
+        let merged = merge_villages(&villages, &big_data);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].5, -6.1647);
+        assert_eq!(merged[0].6, 106.8453);
+    }
+
+    #[test]
+    fn test_merge_villages_fallback_kecamatan() {
+        let villages = vec![VillageRecord {
+            code: "31.71.03.1002".to_string(),
+            name: "Gelora".to_string(),
+            district: "Kemayoran".to_string(),
+            city: "Jakarta Pusat".to_string(),
+            province: "Jakarta".to_string(),
+        }];
+        let big_data = vec![BigRecord {
+            code: "31.71.03.1001".to_string(),
+            name: "Kemayoran".to_string(),
+            district: "Kemayoran".to_string(),
+            city: "Jakarta Pusat".to_string(),
+            province: "Jakarta".to_string(),
+            lat: -6.1647,
+            lon: 106.8453,
+        }];
+        let merged = merge_villages(&villages, &big_data);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].5, -6.1647);
+        assert_eq!(merged[0].6, 106.8453);
+    }
+
+    #[test]
+    fn test_merge_villages_fallback_no_kecamatan() {
+        let villages = vec![VillageRecord {
+            code: "99.99.99.9999".to_string(),
+            name: "Nowhere".to_string(),
+            district: "Unknown".to_string(),
+            city: "Unknown City".to_string(),
+            province: "Unknown Province".to_string(),
+        }];
+        let big_data = vec![];
+        let merged = merge_villages(&villages, &big_data);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].5, 0.0);
+        assert_eq!(merged[0].6, 0.0);
+    }
+
+    #[test]
+    fn test_parse_villages_basic() {
+        let text = "\
+C.Kabupaten.1) Kabupaten Bandung Provinsi Jawa Barat
+31.73.01  60 KECAMATAN BALEENDAH
+31.73.01.1001   5 CIPAGARANTU
+31.73.01.1002  12 MARGASARI";
+        let villages = parse_villages(text);
+        assert_eq!(villages.len(), 2);
+        assert_eq!(villages[0].code, "31.73.01.1001");
+        assert_eq!(villages[0].name, "CIPAGARANTU");
+        assert_eq!(villages[0].province, "Provinsi Jawa Barat");
+        assert_eq!(villages[0].city, "Kabupaten Bandung");
+        assert_eq!(villages[1].code, "31.73.01.1002");
+        assert_eq!(villages[1].name, "MARGASARI");
+    }
+
+    #[test]
+    fn test_build_db_creates_valid_sqlite() {
+        let villages = vec![
+            (
+                "31.71.03.1001".to_string(),
+                "Kemayoran".to_string(),
+                "Kemayoran".to_string(),
+                "Jakarta Pusat".to_string(),
+                "Jakarta".to_string(),
+                -6.1647,
+                106.8453,
+            ),
+            (
+                "31.71.03.1002".to_string(),
+                "Gelora".to_string(),
+                "Senayan".to_string(),
+                "Jakarta Selatan".to_string(),
+                "Jakarta".to_string(),
+                -6.1600,
+                106.8500,
+            ),
+        ];
+
+        let temp_dir = std::env::temp_dir();
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let db_path = temp_dir.join(format!("test_wilayah_{}.db", timestamp));
+
+        build_db(&villages, &db_path).expect("build_db should succeed");
+
+        let conn = rusqlite::Connection::open(&db_path).expect("open built DB");
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM locations", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 2);
+
+        let rtree_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM geo_rtree", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(rtree_count, 2);
+
+        // FTS5: "Kemayoran" should match the first village only (second is Gelora/Senayan)
+        let mut stmt = conn
+            .prepare(
+                "SELECT l.kode FROM locations_fts f \
+                 JOIN locations l ON f.rowid = l.id \
+                 WHERE locations_fts MATCH 'Kemayoran'",
+            )
+            .unwrap();
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0)).unwrap();
+        let results: Vec<String> = rows.collect::<Result<Vec<_>, _>>().unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], "31.71.03.1001");
+
+        fs::remove_file(&db_path).unwrap();
+    }
+}

@@ -2,11 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
-## 0.4.0 - 2026-05-20
+## [Unreleased]
 
 ### Added
 
 - `find_by_code_prefix` now supports pagination with `offset` parameter and returns `PrefixResult` containing `total` and `has_more` (breaking change)
+- Unit tests for core pipeline functions (`parse_section_header`, `extract_village_name`, `polygon_centroid`, `compute_centroid`, `merge_villages`, `parse_villages`, `build_db`)
 
 ### Changed
 
