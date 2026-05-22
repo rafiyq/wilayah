@@ -7,12 +7,19 @@ All notable changes to this project will be documented in this file.
 ### Added
 
 - `find_by_code_prefix` now supports pagination with `offset` parameter and returns `PrefixResult` containing `total` and `has_more` (breaking change)
+- `data_info_from_conn()` — get database metadata from an existing connection
+- `db_meta` table in pipeline-built databases — stores decree, source, build date, and village count
+- `PartialEq` derive on `Village` and `DataInfo`
 - Unit tests for core pipeline functions (`parse_section_header`, `extract_village_name`, `polygon_centroid`, `compute_centroid`, `merge_villages`, `parse_villages`, `build_db`)
 
 ### Changed
 
-- `find_by_code_prefix` return type changed from `Vec<Village>` to `PrefixResult`
-- `find_by_code_prefix` signature now includes `offset: usize` parameter
+- `find_by_code_prefix` return type changed from `Vec<Village>` to `PrefixResult` (breaking)
+- `find_by_code_prefix` signature now includes `offset: usize` parameter (breaking)
+- `DataInfo.source` and `DataInfo.decree` changed from `&'static str` to `String` (breaking)
+- `data_info()` now reads from `db_meta` table instead of build-time env vars; returns `0`/`"unknown"` defaults for DBs built before v0.4.0
+- `Pipeline::build_db()` now creates `db_meta` table with decree, source, build date, and village count
+- Removed `WILAYAH_DATA_SOURCE`, `WILAYAH_DATA_DECREE`, `WILAYAH_BUILD_DATE`, `WILAYAH_VILLAGE_COUNT` build-time env vars
 
 ## 0.3.0 - 2026-05-19
 

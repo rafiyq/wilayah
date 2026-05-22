@@ -105,6 +105,8 @@ Follow semantic versioning. The public API is:
 - `wilayah::find_by_name()` — stable
 - `wilayah::find_by_name_unique()` — stable
 - `wilayah::find_by_code()` — stable
+- `wilayah::find_by_code_prefix()` — stable (pagination API since 0.4.0)
+- `wilayah::PrefixResult` — stable (since 0.4.0)
 - `wilayah::village_count()` — stable
 - `wilayah::data_info()` — stable
 - `wilayah::version()` — stable

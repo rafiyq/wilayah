@@ -181,9 +181,13 @@ impl Pipeline {
         let big_data = fetch_big_data(&self.big_api_url, &self.cache_dir, self.force_refresh_big)?;
         let merged = merge_villages(&villages, &big_data);
 
-        build_db(&merged, &self.output)?;
+        let build_date = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
 
-        // Compute SHA-256
+        build_db(&merged, &self.output, &self.decree, "official", build_date)?;
+
         let sha256 = compute_sha256(&self.output)?;
 
         let village_count = merged.len();
@@ -752,7 +756,13 @@ fn merge_villages(villages: &[VillageRecord], big_data: &[BigRecord]) -> Vec<Vil
     merged
 }
 
-fn build_db(villages: &[VillageTuple], db_path: &Path) -> Result<(), PipelineError> {
+fn build_db(
+    villages: &[VillageTuple],
+    db_path: &Path,
+    decree: &str,
+    source: &str,
+    build_date: u64,
+) -> Result<(), PipelineError> {
     if db_path.exists() {
         fs::remove_file(db_path)
             .map_err(|e| PipelineError(format!("failed to remove existing DB: {e}")))?;
@@ -788,6 +798,36 @@ fn build_db(villages: &[VillageTuple], db_path: &Path) -> Result<(), PipelineErr
         [],
     )
     .map_err(|e| PipelineError(format!("failed to create FTS5: {e}")))?;
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS db_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )",
+        [],
+    )
+    .map_err(|e| PipelineError(format!("failed to create db_meta table: {e}")))?;
+
+    {
+        let mut ins_meta = conn
+            .prepare("INSERT INTO db_meta (key, value) VALUES (?1, ?2)")
+            .map_err(|e| PipelineError(format!("prepare insert db_meta: {e}")))?;
+        ins_meta
+            .execute(rusqlite::params!["decree", decree])
+            .map_err(|e| PipelineError(format!("insert db_meta decree: {e}")))?;
+        ins_meta
+            .execute(rusqlite::params!["source", source])
+            .map_err(|e| PipelineError(format!("insert db_meta source: {e}")))?;
+        ins_meta
+            .execute(rusqlite::params!["build_date", build_date.to_string()])
+            .map_err(|e| PipelineError(format!("insert db_meta build_date: {e}")))?;
+        ins_meta
+            .execute(rusqlite::params![
+                "village_count",
+                villages.len().to_string()
+            ])
+            .map_err(|e| PipelineError(format!("insert db_meta village_count: {e}")))?;
+    }
 
     conn.execute("CREATE INDEX idx_locations_nama ON locations(nama)", [])
         .map_err(|e| PipelineError(format!("failed to create nama index: {e}")))?;
@@ -1181,7 +1221,8 @@ C.Kabupaten.1) Kabupaten Bandung Provinsi Jawa Barat
             .as_nanos();
         let db_path = temp_dir.join(format!("test_wilayah_{}.db", timestamp));
 
-        build_db(&villages, &db_path).expect("build_db should succeed");
+        build_db(&villages, &db_path, "Test Decree", "test", 1234567890)
+            .expect("build_db should succeed");
 
         let conn = rusqlite::Connection::open(&db_path).expect("open built DB");
 
@@ -1194,6 +1235,42 @@ C.Kabupaten.1) Kabupaten Bandung Provinsi Jawa Barat
             .query_row("SELECT COUNT(*) FROM geo_rtree", [], |row| row.get(0))
             .unwrap();
         assert_eq!(rtree_count, 2);
+
+        let decree: String = conn
+            .query_row(
+                "SELECT value FROM db_meta WHERE key = 'decree'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(decree, "Test Decree");
+
+        let source: String = conn
+            .query_row(
+                "SELECT value FROM db_meta WHERE key = 'source'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(source, "test");
+
+        let build_date: String = conn
+            .query_row(
+                "SELECT value FROM db_meta WHERE key = 'build_date'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(build_date, "1234567890");
+
+        let village_count_meta: String = conn
+            .query_row(
+                "SELECT value FROM db_meta WHERE key = 'village_count'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(village_count_meta, "2");
 
         // FTS5: "Kemayoran" should match the first village only (second is Gelora/Senayan)
         let mut stmt = conn

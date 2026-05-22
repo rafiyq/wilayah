@@ -43,22 +43,26 @@ mod db;
 pub mod pipeline;
 
 pub use db::{
-    by_code, by_code_prefix, nearest, open_embedded, search, search_unique, LookupResult,
-    PrefixResult, Village,
+    by_code, by_code_prefix, cached_data_info, nearest, open_embedded, search, search_unique,
+    LookupResult, PrefixResult, Village,
 };
 
 /// Metadata about the embedded location database.
 ///
-/// Returned by [`data_info()`]. Contains information about the data source,
-/// the government decree it's based on, the number of villages, and when
-/// the database was built.
-#[derive(Debug, Clone)]
+/// Returned by [`data_info()`] and [`data_info_from_conn()`]. Contains information
+/// about the data source, the government decree it's based on, the number of
+/// villages, and when the database was built.
+///
+/// Metadata is read from the `db_meta` table embedded in the database itself,
+/// so it is always correct regardless of how the binary was built (pipeline mode
+/// or download mode).
+#[derive(Debug, Clone, PartialEq)]
 pub struct DataInfo {
-    /// The upstream data source (e.g., `"official"`).
-    pub source: &'static str,
+    /// The upstream data source (e.g., `"official"` or `"release"`).
+    pub source: String,
     /// The government decree this data is based on
-    /// (e.g., `"Kepmendagri No 300.2.2-2430 Tahun 2025"`).
-    pub decree: &'static str,
+    /// (e.g., `"Kepmendagri No 300.2.2-2138 Tahun 2025"`).
+    pub decree: String,
     /// The number of villages in the database.
     pub village_count: u32,
     /// Unix timestamp (seconds since epoch) of when this database was built.
@@ -75,22 +79,40 @@ pub const fn version() -> &'static str {
 /// Get metadata about the embedded location database.
 ///
 /// Returns source, decree, village count, and build timestamp information
-/// compiled into the binary.
+/// stored in the `db_meta` table of the embedded database. The result is
+/// cached after the first call.
 ///
 /// # Example
 ///
 /// ```
 /// let info = wilayah::data_info();
-/// assert!(info.village_count > 80000);
-/// assert!(info.build_date > 0);
+/// // village_count and build_date are 0 if the DB predates the db_meta table
+/// if info.village_count > 0 {
+///     assert!(info.village_count > 80000);
+/// }
 /// ```
 pub fn data_info() -> DataInfo {
-    DataInfo {
-        source: env!("WILAYAH_DATA_SOURCE"),
-        decree: env!("WILAYAH_DATA_DECREE"),
-        village_count: env!("WILAYAH_VILLAGE_COUNT").parse().unwrap_or(0),
-        build_date: env!("WILAYAH_BUILD_DATE").parse().unwrap_or(0),
-    }
+    db::cached_data_info().clone()
+}
+
+/// Get metadata about the embedded location database from an existing connection.
+///
+/// Use this if you already have an open connection to avoid the overhead of
+/// opening a second one. For the common case, [`data_info()`] is simpler.
+///
+/// # Example
+///
+/// ```
+/// let conn = wilayah::open()?;
+/// let info = wilayah::data_info_from_conn(&conn);
+/// // village_count is 0 if the DB predates the db_meta table
+/// if info.village_count > 0 {
+///     assert!(info.village_count > 80000);
+/// }
+/// # Ok::<_, rusqlite::Error>(())
+/// ```
+pub fn data_info_from_conn(conn: &rusqlite::Connection) -> DataInfo {
+    db::data_info_from_conn(conn)
 }
 
 /// Open the embedded database.
@@ -301,10 +323,26 @@ mod tests {
     #[test]
     fn test_data_info() {
         let info = data_info();
-        assert!(info.village_count > 80000);
-        assert!(info.build_date > 0);
-        assert!(!info.source.is_empty());
-        assert!(!info.decree.is_empty());
+        // village_count may be 0 if the DB predates db_meta table
+        if info.village_count > 0 {
+            assert!(info.village_count > 80000);
+        }
+        if info.build_date > 0 {
+            assert!(!info.source.is_empty());
+            assert!(!info.decree.is_empty());
+            assert!(
+                !info.decree.contains("unknown"),
+                "decree should be from DB, not 'unknown': {}",
+                info.decree
+            );
+        }
+    }
+
+    #[test]
+    fn test_data_info_from_conn() {
+        let conn = open().unwrap();
+        let info = data_info_from_conn(&conn);
+        assert_eq!(info, data_info());
     }
 
     #[test]

@@ -20,66 +20,35 @@ fn main() {
     // Pipeline mode: set WILAYAH_BUILD_PIPELINE=1 to run full pipeline
     let pipeline_enabled = std::env::var("WILAYAH_BUILD_PIPELINE").is_ok();
 
-    let village_count = if pipeline_enabled {
+    if pipeline_enabled {
         eprintln!("Pipeline mode: running official build...");
-        // Pipeline writes directly to OUT_DIR; output path is db_path
         let output = pipeline::Pipeline::new()
             .output(&db_path)
             .run()
             .expect("Pipeline failed");
-        output.village_count as u32
+        eprintln!("Pipeline produced {} villages", output.village_count);
     } else if db_path.exists() {
-        village_count_from_db(&db_path)
+        // Already have DB in OUT_DIR from previous build
     } else if data_db.exists() {
         fs::copy(&data_db, &db_path).expect("failed to copy cached DB to OUT_DIR");
-        village_count_from_db(&db_path)
     } else {
         // Try to download pre-built database from GitHub Releases
         eprintln!("Downloading pre-built database from GitHub Releases...");
         match download_latest_db(&db_path) {
-            Ok(()) => village_count_from_db(&db_path),
+            Ok(()) => {}
             Err(e) => {
                 panic!(
                     "Failed to download pre-built database: {}\n\
-                     To build from source, run:\n\
-                     cargo run --example build_db --features build-db\n\
-                     Then re-run cargo build.",
+                    To build from source, run:\n\
+                    cargo run --example build_db --features build-db\n\
+                    Then re-run cargo build.",
                     e
                 );
             }
         }
-    };
-
-    let build_date = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-
-    // If pipeline ran, also set environment variables with metadata
-    if pipeline_enabled {
-        println!("cargo:rustc-env=WILAYAH_DATA_SOURCE=official");
-        println!(
-            "cargo:rustc-env=WILAYAH_DATA_DECREE={}",
-            pipeline::DATA_DECREE
-        );
-    } else {
-        // In download mode, we don't know these with certainty, so set generic values
-        println!("cargo:rustc-env=WILAYAH_DATA_SOURCE=release");
-        println!("cargo:rustc-env=WILAYAH_DATA_DECREE=unknown");
     }
 
     println!("cargo:rustc-env=LOCATION_DB_PATH={}", db_path.display());
-    println!("cargo:rustc-env=WILAYAH_VILLAGE_COUNT={}", village_count);
-    println!("cargo:rustc-env=WILAYAH_BUILD_DATE={}", build_date);
-}
-
-fn village_count_from_db(db_path: &Path) -> u32 {
-    use rusqlite::Connection;
-    let conn = Connection::open(db_path).expect("failed to open DB for count");
-    let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM locations", [], |row| row.get(0))
-        .expect("failed to query village count");
-    count as u32
 }
 
 fn download_latest_db(dest: &Path) -> Result<(), String> {

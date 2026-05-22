@@ -34,3 +34,18 @@
 - [x] Distribute pre-built DB via GitHub Release (download in build.rs)
 - [x] Update CI to use `build_db` example for fresh build
 - [x] Update `RELEASE.md` and `README.md` with new workflow
+
+## v0.4.0 (Completed)
+
+- [x] Pagination for `find_by_code_prefix` — `PrefixResult` with `total`, `has_more`, `offset`
+- [x] `db_meta` table in pipeline-built databases
+- [x] `data_info_from_conn()` public function
+- [x] `PartialEq` on `Village` and `DataInfo`
+- [x] `DataInfo` fields changed from `&'static str` to `String`
+- [x] Pipeline unit tests
+- [x] Update README and RELEASE.md for v0.4.0 API
+
+## Future
+
+- [ ] Build-dependency optimization — split pipeline into separate workspace crate (deferred from v0.4.0)
+- [ ] `locate` function — reverse geocode administrative hierarchy from coordinates

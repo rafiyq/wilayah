@@ -35,8 +35,9 @@ println!("{unique}"); // "Gambir — Gambir, Kota Administrasi Jakarta Pusat, ..
 // Direct lookup by administrative code
 let v = wilayah::find_by_code(&conn, "31.71.03.1001")?;
 
-// List all villages in a kecamatan, kabupaten, or province
-let villages = wilayah::find_by_code_prefix(&conn, "31.71.03", 100)?;
+// List all villages in a kecamatan, kabupaten, or province (paginated)
+let result = wilayah::find_by_code_prefix(&conn, "31.71.03", 100, 0)?;
+println!("{} of {} villages", result.villages.len(), result.total);
 ```
 
 ## Quick start (HTTP server)
@@ -85,9 +86,10 @@ Server info and village count.
 | `q` | string | optional | Exact administrative code (e.g., `31.71.03.1001`) |
 | `prefix` | string | optional | Code prefix (e.g., `31.71.03` for all villages in a kecamatan) |
 | `limit` | usize | 100 | Max results for prefix search (1..1000) |
+| `offset` | usize | 0 | Number of results to skip (for pagination) |
 
 Provide either `q` or `prefix`. Exact lookup returns `{"result": {...}}` (or `null`),
-prefix returns `{"results": [...]}`.
+prefix returns `{"results": [...], "total": N, "has_more": bool}`.
 
 ## Data
 

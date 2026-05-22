@@ -1,5 +1,8 @@
 use rusqlite::{functions::FunctionFlags, Connection, Result};
 use std::fmt;
+use std::sync::OnceLock;
+
+use crate::DataInfo;
 
 const DB_BYTES: &[u8] = include_bytes!(env!("LOCATION_DB_PATH"));
 
@@ -34,6 +37,45 @@ pub fn open_embedded() -> Result<Connection> {
     )?;
 
     Ok(conn)
+}
+
+/// Read a key from the `db_meta` table.
+fn query_meta(conn: &Connection, key: &str) -> Option<String> {
+    conn.query_row("SELECT value FROM db_meta WHERE key = ?1", [key], |row| {
+        row.get(0)
+    })
+    .ok()
+}
+
+/// Get metadata about the database from an existing connection.
+///
+/// Reads the `db_meta` table for decree, source, build date, and village count.
+/// Returns default values if the table is missing or keys are absent.
+pub fn data_info_from_conn(conn: &Connection) -> DataInfo {
+    DataInfo {
+        source: query_meta(conn, "source").unwrap_or_else(|| "unknown".to_string()),
+        decree: query_meta(conn, "decree").unwrap_or_else(|| "unknown".to_string()),
+        village_count: query_meta(conn, "village_count")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0),
+        build_date: query_meta(conn, "build_date")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0),
+    }
+}
+
+/// Cached `DataInfo` — opened once, reused on subsequent calls.
+static CACHED_DATA_INFO: OnceLock<DataInfo> = OnceLock::new();
+
+/// Get metadata about the embedded location database (cached).
+///
+/// Opens the database on first call and caches the result.
+/// Subsequent calls return the cached value without re-opening the database.
+pub fn cached_data_info() -> &'static DataInfo {
+    CACHED_DATA_INFO.get_or_init(|| {
+        let conn = open_embedded().expect("failed to open embedded database for metadata");
+        data_info_from_conn(&conn)
+    })
 }
 
 /// Find nearest villages using RTree spatial index + Haversine distance.
@@ -309,7 +351,7 @@ impl fmt::Display for PrefixResult {
 }
 
 /// A village record with administrative hierarchy and coordinates.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct Village {
     /// BMKG-compatible administrative code (e.g., `31.71.03.1001`)
     pub code: String,

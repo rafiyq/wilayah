@@ -1,5 +1,7 @@
 use regex::Regex;
-use wilayah::{find_by_code, find_by_code_prefix, find_by_name, open, village_count};
+use wilayah::{
+    data_info_from_conn, find_by_code, find_by_code_prefix, find_by_name, open, village_count,
+};
 
 #[test]
 fn test_db_has_many_villages() {
@@ -111,4 +113,19 @@ fn test_find_by_code_prefix_province() {
     // Province-level query should exceed the limit, demonstrating pagination need
     assert!(result.total > 100);
     assert!(result.has_more);
+}
+
+#[test]
+fn test_db_meta_table() {
+    let conn = open().unwrap();
+    let info = data_info_from_conn(&conn);
+    // If db_meta exists (pipeline-rebuilt DB), verify values
+    if info.village_count > 0 && info.build_date > 0 {
+        assert!(
+            !info.decree.contains("unknown"),
+            "decree should not be 'unknown', got: {}",
+            info.decree
+        );
+        assert!(!info.source.is_empty(), "source should not be empty");
+    }
 }
