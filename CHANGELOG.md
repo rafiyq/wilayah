@@ -20,6 +20,9 @@ All notable changes to this project will be documented in this file.
 - `data_info()` now reads from `db_meta` table instead of build-time env vars; returns `0`/`"unknown"` defaults for DBs built before v0.4.0
 - `Pipeline::build_db()` now creates `db_meta` table with decree, source, build date, and village count
 - Removed `WILAYAH_DATA_SOURCE`, `WILAYAH_DATA_DECREE`, `WILAYAH_BUILD_DATE`, `WILAYAH_VILLAGE_COUNT` build-time env vars
+- Removed pipeline mode from `build.rs` (`WILAYAH_BUILD_PIPELINE=1`); pipeline now only runs via `cargo run --example build_db --features build-db`
+- Moved pipeline dependencies (`regex`, `serde_json`, `sha2`) from `[build-dependencies]` to optional `[dependencies]` behind `build-db` feature
+- Removed `rusqlite` from `[build-dependencies]`; lookup-only users now compile ~126 fewer packages
 
 ## 0.3.0 - 2026-05-19
 

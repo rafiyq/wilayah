@@ -132,19 +132,14 @@ Set `WILAYAH_REFRESH_BIG=1` to force re-fetch from BIG API:
 WILAYAH_REFRESH_BIG=1 cargo run --example build_db --features build-db
 ```
 
-The build script (`build.rs`) operates in two modes:
-
-- **Download mode** (default): copies `data/locations.db` if present, or downloads the
-  pre-built DB from the latest GitHub Release into `OUT_DIR`. This is what
-  normal `cargo build` does.
-- **Pipeline mode** (`WILAYAH_BUILD_PIPELINE=1`): runs the full data pipeline as
-  above and writes the result to `data/locations.db` (for release packaging).
+The build script (`build.rs`) downloads a pre-built database from the latest
+GitHub Release into `OUT_DIR`. If `data/locations.db` exists locally (from a
+previous pipeline run), it copies that instead.
 
 ### Environment variables
 
 | Variable | Effect |
 |----------|--------|
-| `WILAYAH_BUILD_PIPELINE=1` | Run full data pipeline during `cargo build` (rarely needed) |
 | `WILAYAH_REFRESH_BIG=1` | Force re-fetch BIG data from ArcGIS API (pipeline only) |
 | `WILAYAH_VERIFY_VERBOSE=1` | Print detailed verification in comparison tool |
 
@@ -164,14 +159,14 @@ The build script (`build.rs`) operates in two modes:
 ### Build flow
 
 ```text
-cargo build (default) → build.rs (download mode) → copy/Download DB → embed
-cargo build WILAYAH_BUILD_PIPELINE=1 → build.rs (pipeline mode) → run Pipeline → copy to data/ → embed
-cargo run --example build_db --features build-db → Pipeline.run() → build_db
+cargo build → build.rs (download) → copy/Download DB → embed
+cargo run --example build_db --features build-db → Pipeline.run() → build DB
 cargo run --example verify_legacy → compare embedded DB vs data/cache/legacy_snapshot.json
 ```
 
-The pipeline code is **single source of truth**: both the build script and the
-`build_db` example use the exact same `Pipeline` struct via `#[path]` import.
+The pipeline code lives in `src/pipeline.rs`, accessible as `wilayah::pipeline`
+when the `build-db` feature is enabled. Both the `build_db` example and any
+programmatic usage share the same `Pipeline` struct.
 
 ## Verification
 
