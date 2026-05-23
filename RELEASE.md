@@ -107,12 +107,17 @@ Follow semantic versioning. The public API is:
 - `wilayah::find_by_code()` — stable
 - `wilayah::find_by_code_prefix()` — stable (pagination API since 0.4.0)
 - `wilayah::PrefixResult` — stable (since 0.4.0)
-- `wilayah::village_count()` — stable
+- `wilayah::Village` — stable
+- `wilayah::LookupResult` — stable
+- `wilayah::DataInfo` — stable (fields changed to `String` in 0.4.0, breaking)
 - `wilayah::data_info()` — stable
+- `wilayah::data_info_from_conn()` — stable (since 0.4.0)
+- `wilayah::village_count()` — stable
 - `wilayah::version()` — stable
 
 Breaking changes (major version bump):
 
 - Schema changes to the embedded database
 - Removal or signature change of public functions
+- Public struct field type changes (e.g., `DataInfo` `&'static str` → `String`)
 - Data source changes that significantly alter results
