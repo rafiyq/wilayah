@@ -32,7 +32,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: data/locations.db
-          key: ${{ runner.os }}-db-${{ hashFiles('src/pipeline.rs', 'src/db.rs', 'Cargo.toml') }}
+          key: ${{ runner.os }}-db-${{ hashFiles('src/builder.rs', 'src/db.rs', 'Cargo.toml') }}
 
       - run: cargo fmt --check
       - run: cargo clippy -- -D warnings

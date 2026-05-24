@@ -10,7 +10,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use wilayah::pipeline::Pipeline;
+//! use wilayah::builder::Pipeline;
 //!
 //! let output = Pipeline::new()
 //!     .output(std::path::Path::new("data/locations.db"))

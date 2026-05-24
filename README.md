@@ -149,8 +149,8 @@ previous pipeline run), it copies that instead.
 
 - **Library** `src/lib.rs`: public API (`open`, `find_nearest`, `find_by_name`, etc.)
 - **Database layer** `src/db.rs`: SQLite access (RTree, FTS5)
-- **Pipeline** `src/pipeline.rs`: full data build process (PDF → BIG → DB)
-- **Build script** `build.rs`: download-or-build shim (uses `#[path]` to reuse pipeline)
+- **Builder** `src/builder.rs`: full data build process (PDF → BIG → DB)
+- **Build script** `build.rs`: download shim (copies or downloads pre-built DB)
 - **Examples**:
   - `serve` — axum HTTP API server (default)
   - `build_db` — CLI wrapper for `Pipeline` (requires `build-db` feature)
@@ -164,7 +164,7 @@ cargo run --example build_db --features build-db → Pipeline.run() → build DB
 cargo run --example verify_legacy → compare embedded DB vs data/cache/legacy_snapshot.json
 ```
 
-The pipeline code lives in `src/pipeline.rs`, accessible as `wilayah::pipeline`
+The builder code lives in `src/builder.rs`, accessible as `wilayah::builder`
 when the `build-db` feature is enabled. Both the `build_db` example and any
 programmatic usage share the same `Pipeline` struct.
 

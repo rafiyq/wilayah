@@ -24,12 +24,11 @@
 //! with RTree spatial index and FTS5 full-text search. The database is embedded
 //! into the binary at compile time via a build script.
 //!
-//! On first `cargo build`, the build script either downloads a pre-built
-//! database from the GitHub Releases (default) or runs the full pipeline if
-//! `WILAYAH_BUILD_PIPELINE=1` is set. Subsequent builds reuse the cached
-//! database located at `data/locations.db`.
+//! On first `cargo build`, the build script downloads a pre-built database
+//! from the GitHub Releases. Subsequent builds reuse the cached database
+//! located at `data/locations.db`.
 //!
-//! To build from scratch, set `WILAYAH_BUILD_PIPELINE=1` and run:
+//! To build from scratch, run:
 //!
 //! ```bash
 //! cargo run --example build_db --features build-db
@@ -40,7 +39,7 @@
 mod db;
 
 #[cfg(feature = "build-db")]
-pub mod pipeline;
+pub mod builder;
 
 pub use db::{
     by_code, by_code_prefix, cached_data_info, nearest, open_embedded, search, search_unique,

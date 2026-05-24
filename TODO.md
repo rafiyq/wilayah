@@ -26,10 +26,10 @@
 
 ## Build System Restructure (Completed)
 
-- [x] Split pipeline from `build.rs` into `src/pipeline.rs`
-- [x] Add `build-db` feature to gate pipeline dependencies
-- [x] Rewrite `build.rs` to support download mode (default) and pipeline mode (`WILAYAH_BUILD_PIPELINE=1`)
-- [x] Add `examples/build_db.rs` CLI wrapper for pipeline
+- [x] Split pipeline from `build.rs` into `src/builder.rs`
+- [x] Add `build-db` feature to gate builder dependencies
+- [x] Rewrite `build.rs` to download-only mode (removed `WILAYAH_BUILD_PIPELINE=1`)
+- [x] Add `examples/build_db.rs` CLI wrapper for builder
 - [x] Add `examples/verify_legacy.rs` standalone verification tool
 - [x] Distribute pre-built DB via GitHub Release (download in build.rs)
 - [x] Update CI to use `build_db` example for fresh build
@@ -38,7 +38,7 @@
 ## v0.4.0 (Completed)
 
 - [x] Pagination for `find_by_code_prefix` — `PrefixResult` with `total`, `has_more`, `offset`
-- [x] `db_meta` table in pipeline-built databases
+- [x] `db_meta` table in builder-built databases
 - [x] `data_info_from_conn()` public function
 - [x] `PartialEq` on `Village` and `DataInfo`
 - [x] `DataInfo` fields changed from `&'static str` to `String`
@@ -47,5 +47,5 @@
 
 ## Future
 
-- [ ] Build-dependency optimization — split pipeline into separate workspace crate (deferred from v0.4.0)
+- [ ] Build-dependency optimization — split builder into separate workspace crate (deferred from v0.4.0)
 - [ ] `locate` function — reverse geocode administrative hierarchy from coordinates
