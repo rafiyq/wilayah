@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
-- `find_by_code_prefix` now supports pagination with `offset` parameter and returns `PrefixResult` containing `total` and `has_more` (breaking change)
+- `find_by_code_prefix` now supports pagination with `offset` parameter and returns `PrefixResult` containing `total` and `has_more` (breaking)
 - `data_info_from_conn()` — get database metadata from an existing connection
 - `db_meta` table in builder-built databases — stores decree, source, build date, and village count
 - `PartialEq` derive on `Village` and `DataInfo`
