@@ -4,7 +4,6 @@ use axum::{
     routing::get,
     Json, Router,
 };
-use wilayah::{Village, find_by_code, find_by_code_prefix, find_by_name, find_nearest, locate, village_count};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -12,6 +11,9 @@ use tokio::net::TcpListener;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
+use wilayah::{
+    find_by_code, find_by_code_prefix, find_by_name, find_nearest, locate, village_count, Village,
+};
 
 struct AppState {
     db: Mutex<rusqlite::Connection>,
@@ -128,7 +130,10 @@ async fn nearest(
         ));
     }
     let limit = params.limit.clamp(1, 20);
-    info!("nearest: lat={}, lon={}, limit={}", params.lat, params.lon, limit);
+    info!(
+        "nearest: lat={}, lon={}, limit={}",
+        params.lat, params.lon, limit
+    );
     let db = state.db.lock().unwrap();
     let results = find_nearest(&db, params.lat, params.lon, limit).map_err(|e| {
         (
@@ -205,7 +210,10 @@ async fn code(
         }
         let limit = params.limit.clamp(1, 1000);
         let offset = params.offset;
-        info!("code: prefix lookup for {} (limit={}, offset={})", prefix, limit, offset);
+        info!(
+            "code: prefix lookup for {} (limit={}, offset={})",
+            prefix, limit, offset
+        );
         let result = find_by_code_prefix(&db, prefix, limit, offset).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -214,11 +222,14 @@ async fn code(
                 }),
             )
         })?;
-        return Ok(Json(serde_json::to_value(CodePrefixResponse {
-            results: result.villages,
-            total: result.total,
-            has_more: result.has_more,
-        }).unwrap()));
+        return Ok(Json(
+            serde_json::to_value(CodePrefixResponse {
+                results: result.villages,
+                total: result.total,
+                has_more: result.has_more,
+            })
+            .unwrap(),
+        ));
     }
     Err((
         StatusCode::BAD_REQUEST,
