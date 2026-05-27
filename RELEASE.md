@@ -107,6 +107,10 @@ Follow semantic versioning. The public API is:
 - `wilayah::find_by_code()` — stable
 - `wilayah::find_by_code_prefix()` — stable (pagination API since 0.4.0)
 - `wilayah::PrefixResult` — stable (since 0.4.0)
+- `wilayah::locate()` — stable (since 0.5.0)
+- `wilayah::Location` — stable (since 0.5.0)
+- `wilayah::AdminLevel` — stable (since 0.5.0)
+- `wilayah::LocateMethod` — stable (since 0.5.0)
 - `wilayah::Village` — stable
 - `wilayah::LookupResult` — stable
 - `wilayah::DataInfo` — stable (fields changed to `String` in 0.4.0, breaking)

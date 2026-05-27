@@ -382,3 +382,131 @@ impl fmt::Display for Village {
         )
     }
 }
+
+/// Method used to determine the administrative location.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub enum LocateMethod {
+    /// Matched by nearest village centroid (Haversine distance).
+    Nearest,
+    /// Matched by polygon containment (future).
+    Contained,
+}
+
+impl fmt::Display for LocateMethod {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LocateMethod::Nearest => write!(f, "nearest"),
+            LocateMethod::Contained => write!(f, "contained"),
+        }
+    }
+}
+
+/// A single level of the administrative hierarchy with code and name.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct AdminLevel {
+    /// Administrative code for this level (e.g., `"31"`, `"31.71"`, `"31.71.03"`).
+    pub code: String,
+    /// Name of this administrative unit.
+    pub name: String,
+}
+
+impl fmt::Display for AdminLevel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} {}", self.code, self.name)
+    }
+}
+
+/// Result of a reverse-geocode lookup showing the full administrative hierarchy.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct Location {
+    /// Province level (code + name).
+    pub province: AdminLevel,
+    /// City/regency (kabupaten/kota) level.
+    pub city: AdminLevel,
+    /// District (kecamatan) level.
+    pub district: AdminLevel,
+    /// Village (desa/kelurahan) name.
+    pub village: String,
+    /// Village administrative code (e.g., `"31.71.03.1001"`).
+    pub village_code: String,
+    /// Latitude of the matched village centroid.
+    pub lat: f64,
+    /// Longitude of the matched village centroid.
+    pub lon: f64,
+    /// Distance in km from the query point to the matched village centroid.
+    pub dist_km: f64,
+    /// Method used to determine this location.
+    pub method: LocateMethod,
+}
+
+impl fmt::Display for Location {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "{}", self.province)?;
+        writeln!(f, "  {}", self.city)?;
+        writeln!(f, "  {}", self.district)?;
+        writeln!(
+            f,
+            "  {} {} ({:.1} km, {})",
+            self.village_code, self.village, self.dist_km, self.method
+        )
+    }
+}
+
+/// Reverse-geocode a lat/lon to the full administrative hierarchy.
+///
+/// Finds the nearest village centroid and parses its administrative code
+/// to build the province, city, and district hierarchy.
+///
+/// # Arguments
+///
+/// * `conn` - Database connection from [`open_embedded`]
+/// * `lat` - Latitude (-90..90)
+/// * `lon` - Longitude (-180..180)
+///
+/// # Example
+///
+/// ```ignore
+/// let conn = wilayah::open()?;
+/// if let Some(loc) = wilayah::locate(&conn, -6.1647, 106.8453)? {
+///     println!("{loc}");
+/// }
+/// ```
+pub fn locate(conn: &Connection, lat: f64, lon: f64) -> Result<Option<Location>> {
+    let mut results = nearest(conn, lat, lon, 1)?;
+    let village = match results.pop() {
+        Some(v) => v,
+        None => return Ok(None),
+    };
+
+    let dist_km = village.dist_km.unwrap_or(0.0);
+
+    let parts: Vec<&str> = village.code.split('.').collect();
+    if parts.len() != 4 {
+        return Ok(None);
+    }
+
+    let province_code = parts[0].to_string();
+    let city_code = format!("{}.{}", parts[0], parts[1]);
+    let district_code = format!("{}.{}.{}", parts[0], parts[1], parts[2]);
+
+    Ok(Some(Location {
+        province: AdminLevel {
+            code: province_code,
+            name: village.province.clone(),
+        },
+        city: AdminLevel {
+            code: city_code,
+            name: village.city.clone(),
+        },
+        district: AdminLevel {
+            code: district_code,
+            name: village.district.clone(),
+        },
+        village: village.name,
+        village_code: village.code,
+        lat: village.lat,
+        lon: village.lon,
+        dist_km,
+        method: LocateMethod::Nearest,
+    }))
+}

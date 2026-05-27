@@ -43,7 +43,7 @@ pub mod builder;
 
 pub use db::{
     by_code, by_code_prefix, cached_data_info, nearest, open_embedded, search, search_unique,
-    LookupResult, PrefixResult, Village,
+    AdminLevel, LocateMethod, Location, LookupResult, PrefixResult, Village,
 };
 
 /// Metadata about the embedded location database.
@@ -294,6 +294,38 @@ pub fn find_by_code_prefix(
     db::by_code_prefix(conn, prefix, limit, offset)
 }
 
+/// Reverse-geocode a lat/lon to the full administrative hierarchy.
+///
+/// Finds the nearest village centroid and returns the complete administrative
+/// hierarchy: province, city/regency, district, and village with their codes
+/// and names.
+///
+/// # Arguments
+///
+/// * `conn` - Database connection from [`open()`]
+/// * `lat` - Latitude (-90..90)
+/// * `lon` - Longitude (-180..180)
+///
+/// # Example
+///
+/// ```
+/// let conn = wilayah::open()?;
+/// if let Some(loc) = wilayah::locate(&conn, -6.1647, 106.8453)? {
+///     assert_eq!(loc.province.code, "31");
+///     assert!(loc.city.name.contains("Jakarta"));
+///     assert!(loc.dist_km < 5.0);
+///     assert_eq!(loc.method, wilayah::LocateMethod::Nearest);
+/// }
+/// # Ok::<_, rusqlite::Error>(())
+/// ```
+pub fn locate(
+    conn: &rusqlite::Connection,
+    lat: f64,
+    lon: f64,
+) -> rusqlite::Result<Option<Location>> {
+    db::locate(conn, lat, lon)
+}
+
 /// Get the total number of villages in the database.
 ///
 /// # Example
@@ -346,7 +378,7 @@ mod tests {
 
     #[test]
     fn test_version() {
-        assert_eq!(version(), "0.4.0");
+        assert_eq!(version(), "0.5.0");
     }
 
     #[test]
@@ -489,5 +521,46 @@ mod tests {
             "should be not found, got {:?}",
             result
         );
+    }
+
+    #[test]
+    fn test_locate_jakarta() {
+        let conn = open().unwrap();
+        let loc = locate(&conn, -6.1647, 106.8453)
+            .unwrap()
+            .expect("should locate Jakarta");
+        assert_eq!(loc.province.code, "31");
+        assert!(loc.city.name.contains("Jakarta"));
+        assert!(loc.district.name.len() > 0);
+        assert!(loc.village.len() > 0);
+        assert!(loc.village_code.contains('.'));
+        assert!(loc.dist_km < 5.0);
+        assert_eq!(loc.method, LocateMethod::Nearest);
+    }
+
+    #[test]
+    fn test_locate_display() {
+        let conn = open().unwrap();
+        let loc = locate(&conn, -6.1647, 106.8453)
+            .unwrap()
+            .expect("should locate Jakarta");
+        let s = format!("{loc}");
+        assert!(s.contains(&loc.province.code));
+        assert!(s.contains(&loc.village));
+    }
+
+    #[test]
+    fn test_admin_level_display() {
+        let level = AdminLevel {
+            code: "31.71".into(),
+            name: "Jakarta".into(),
+        };
+        assert_eq!(format!("{level}"), "31.71 Jakarta");
+    }
+
+    #[test]
+    fn test_locate_method_display() {
+        assert_eq!(format!("{}", LocateMethod::Nearest), "nearest");
+        assert_eq!(format!("{}", LocateMethod::Contained), "contained");
     }
 }

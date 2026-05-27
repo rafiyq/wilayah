@@ -4,7 +4,7 @@ use axum::{
     routing::get,
     Json, Router,
 };
-use wilayah::{Village, find_by_code, find_by_code_prefix, find_by_name, find_nearest, village_count};
+use wilayah::{Village, find_by_code, find_by_code_prefix, find_by_name, find_nearest, locate, village_count};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -41,6 +41,12 @@ struct SearchParams {
     q: String,
     #[serde(default = "default_limit")]
     limit: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct LocateParams {
+    lat: f64,
+    lon: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -92,6 +98,11 @@ struct CodePrefixResponse {
 #[derive(Serialize)]
 struct ErrorResponse {
     error: String,
+}
+
+#[derive(Serialize)]
+struct LocateResponse {
+    result: Option<wilayah::Location>,
 }
 
 async fn index(state: State<Arc<AppState>>) -> Json<IndexResponse> {
@@ -217,6 +228,31 @@ async fn code(
     ))
 }
 
+async fn locate_handler(
+    state: State<Arc<AppState>>,
+    Query(params): Query<LocateParams>,
+) -> Result<Json<LocateResponse>, (StatusCode, Json<ErrorResponse>)> {
+    if params.lat < -90.0 || params.lat > 90.0 || params.lon < -180.0 || params.lon > 180.0 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Invalid coordinates".into(),
+            }),
+        ));
+    }
+    info!("locate: lat={}, lon={}", params.lat, params.lon);
+    let db = state.db.lock().unwrap();
+    let result = locate(&db, params.lat, params.lon).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("{e}"),
+            }),
+        )
+    })?;
+    Ok(Json(LocateResponse { result }))
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
@@ -235,6 +271,7 @@ async fn main() {
         .route("/nearest", get(nearest))
         .route("/search", get(search))
         .route("/code", get(code))
+        .route("/locate", get(locate_handler))
         .with_state(state)
         .layer(cors);
 

@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- `locate()` — reverse-geocode lat/lon to full administrative hierarchy (province, city, district, village)
+- `Location` struct — complete administrative hierarchy with codes, names, coordinates, distance, and method
+- `AdminLevel` struct — single administrative level with code and name
+- `LocateMethod` enum — `Nearest` (centroid-based) and `Contained` (future polygon-based)
+- `Display` impl for `Location`, `AdminLevel`, `LocateMethod`
+- `GET /locate` endpoint in HTTP server example
+
 ## 0.4.0 - 2026-05-22
 
 ### Added
