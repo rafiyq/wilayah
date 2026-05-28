@@ -4,3 +4,4 @@
 *.db-wal
 data/raw/
 data/cache/
+.opencode/
