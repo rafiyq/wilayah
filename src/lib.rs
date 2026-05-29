@@ -8,10 +8,10 @@
 //! # Quick start
 //!
 //! ```
-//! use wilayah;
+//! use wilayah::Database;
 //!
-//! let conn = wilayah::open().expect("database");
-//! let nearest = wilayah::find_nearest(&conn, -6.1647, 106.8453, 5).expect("query");
+//! let db = Database::open().expect("database");
+//! let nearest = db.find_nearest(-6.1647, 106.8453, 5).expect("query");
 //! assert!(!nearest.is_empty());
 //! ```
 //!
@@ -33,40 +33,42 @@
 //! ```bash
 //! cargo run --example build_db --features build-db
 //! ```
+//!
+//! # Feature flags
+//!
+//! - **`db`** *(enabled by default)* — Embedded SQLite database via `rusqlite`.
+//!   Enables [`Database`], [`Error`], and all query methods.
+//! - **`build-db`** — Pipeline for building the database from source data.
+//! - **`types`** — *(always available)* Shared types ([`Village`], [`Location`],
+//!   [`AdminLevel`], [`LocateMethod`]) and [`haversine_km()`]. Use this with
+//!   `default-features = false` when you only need the types (e.g., Cloudflare
+//!   Workers with a different database backend).
+//! - **`raw-sqlite`** — Exposes `Database::conn()` for direct `rusqlite`
+//!   access. Using this accessor makes your code dependent on `rusqlite`'s API.
 
 #![deny(missing_docs)]
 
+/// Shared types and utilities for Indonesian village location data.
+///
+/// This module is always available regardless of feature flags. It contains
+/// the core data types ([`Village`], [`Location`], [`AdminLevel`], etc.),
+/// the [`haversine_km`] distance function, and the [`location_from_village`]
+/// helper for building administrative hierarchies from village codes.
+pub mod types;
+
+#[cfg(feature = "db")]
 mod db;
 
 #[cfg(feature = "build-db")]
 pub mod builder;
 
-pub use db::{
-    by_code, by_code_prefix, cached_data_info, nearest, open_embedded, search, search_unique,
-    AdminLevel, LocateMethod, Location, LookupResult, PrefixResult, Village,
+pub use types::{
+    haversine_km, location_from_village, AdminLevel, DataInfo, LocateMethod, Location,
+    LookupResult, PrefixResult, Village,
 };
 
-/// Metadata about the embedded location database.
-///
-/// Returned by [`data_info()`] and [`data_info_from_conn()`]. Contains information
-/// about the data source, the government decree it's based on, the number of
-/// villages, and when the database was built.
-///
-/// Metadata is read from the `db_meta` table embedded in the database itself,
-/// so it is always correct regardless of how the binary was built (pipeline mode
-/// or download mode).
-#[derive(Debug, Clone, PartialEq)]
-pub struct DataInfo {
-    /// The upstream data source (e.g., `"official"` or `"release"`).
-    pub source: String,
-    /// The government decree this data is based on
-    /// (e.g., `"Kepmendagri No 300.2.2-2138 Tahun 2025"`).
-    pub decree: String,
-    /// The number of villages in the database.
-    pub village_count: u32,
-    /// Unix timestamp (seconds since epoch) of when this database was built.
-    pub build_date: u64,
-}
+#[cfg(feature = "db")]
+pub use db::{Database, Error};
 
 /// Get the version of this crate.
 ///
@@ -90,254 +92,9 @@ pub const fn version() -> &'static str {
 ///     assert!(info.village_count > 80000);
 /// }
 /// ```
+#[cfg(feature = "db")]
 pub fn data_info() -> DataInfo {
     db::cached_data_info().clone()
-}
-
-/// Get metadata about the embedded location database from an existing connection.
-///
-/// Use this if you already have an open connection to avoid the overhead of
-/// opening a second one. For the common case, [`data_info()`] is simpler.
-///
-/// # Example
-///
-/// ```
-/// let conn = wilayah::open()?;
-/// let info = wilayah::data_info_from_conn(&conn);
-/// // village_count is 0 if the DB predates the db_meta table
-/// if info.village_count > 0 {
-///     assert!(info.village_count > 80000);
-/// }
-/// # Ok::<_, rusqlite::Error>(())
-/// ```
-pub fn data_info_from_conn(conn: &rusqlite::Connection) -> DataInfo {
-    db::data_info_from_conn(conn)
-}
-
-/// Open the embedded database.
-///
-/// Loads the ~20 MB SQLite database from the compiled binary into memory using
-/// SQLite's online backup API. The database contains village records with
-/// spatial (RTree) and full-text (FTS5) indexes.
-///
-/// # Example
-///
-/// ```
-/// let conn = wilayah::open()?;
-/// # Ok::<_, rusqlite::Error>(())
-/// ```
-pub fn open() -> rusqlite::Result<rusqlite::Connection> {
-    db::open_embedded()
-}
-
-/// Find the nearest villages to a given latitude/longitude.
-///
-/// Uses a SQLite RTree spatial index for fast bounding-box filtering, followed
-/// by Haversine distance calculation to find the closest villages. The search
-/// progressively expands the search radius until results are found or the full
-/// globe has been searched.
-///
-/// # Arguments
-///
-/// * `conn` - Database connection from [`open()`]
-/// * `lat` - Latitude (-90..90)
-/// * `lon` - Longitude (-180..180)
-/// * `limit` - Maximum number of results to return (clamped to 1..20)
-///
-/// # Example
-///
-/// ```
-/// let conn = wilayah::open()?;
-/// let results = wilayah::find_nearest(&conn, -6.1647, 106.8453, 5)?;
-/// for v in results {
-///     println!("{} ({:.1} km)", v.name, v.dist_km.unwrap());
-/// }
-/// # Ok::<_, rusqlite::Error>(())
-/// ```
-///
-/// # Edge case: Papua coordinates
-///
-/// ```
-/// let conn = wilayah::open()?;
-/// let results = wilayah::find_nearest(&conn, -2.5, 140.0, 1)?;
-/// assert!(!results.is_empty());
-/// assert!(results[0].province.contains("Papua"));
-/// # Ok::<_, rusqlite::Error>(())
-/// ```
-pub fn find_nearest(
-    conn: &rusqlite::Connection,
-    lat: f64,
-    lon: f64,
-    limit: usize,
-) -> rusqlite::Result<Vec<Village>> {
-    db::nearest(conn, lat, lon, limit)
-}
-
-/// Search for villages by name.
-///
-/// Uses FTS5 full-text search matching against village name, district, city,
-/// and province. Supports partial matches and returns results ranked by BM25.
-///
-/// For disambiguation, include city or province in the query:
-/// `find_by_name("kemayoran jakarta")` returns only villages in Jakarta.
-///
-/// # Arguments
-///
-/// * `conn` - Database connection from [`open()`]
-/// * `query` - Search query (e.g., `"kemayoran"` or `"kemayoran jakarta"`)
-/// * `limit` - Maximum number of results to return (clamped to 1..100)
-///
-/// # Example
-///
-/// ```
-/// let conn = wilayah::open()?;
-/// let results = wilayah::find_by_name(&conn, "kemayoran jakarta", 10)?;
-/// for v in results {
-///     println!("{} in {}, {}", v.name, v.district, v.province);
-/// }
-/// # Ok::<_, rusqlite::Error>(())
-/// ```
-pub fn find_by_name(
-    conn: &rusqlite::Connection,
-    query: &str,
-    limit: usize,
-) -> rusqlite::Result<Vec<Village>> {
-    db::search(conn, query, limit)
-}
-
-/// Search for a unique village by name.
-///
-/// Returns [`LookupResult::Found`] if exactly one match exists,
-/// [`LookupResult::Ambiguous`] with up to 20 candidates if multiple match,
-/// or [`LookupResult::NotFound`] if no match exists.
-///
-/// This is useful for callers that need unambiguous results. For example,
-/// a CLI tool can show an error with candidate list when the result is
-/// ambiguous, rather than silently picking the wrong village.
-///
-/// # Arguments
-///
-/// * `conn` - Database connection from [`open()`]
-/// * `query` - Search query (e.g., `"kemayoran"` or `"kemayoran jakarta"`)
-///
-/// # Example: exact match
-///
-/// ```
-/// let conn = wilayah::open()?;
-/// let result = wilayah::find_by_name_unique(&conn, "abadijaya")?;
-/// if let wilayah::LookupResult::Found(v) = result {
-///     println!("Found: {} in {}", v.name, v.city);
-/// }
-/// # Ok::<_, rusqlite::Error>(())
-/// ```
-///
-/// # Example: ambiguous name
-///
-/// ```
-/// let conn = wilayah::open()?;
-/// // "sukamaju" exists in many villages across Indonesia
-/// let result = wilayah::find_by_name_unique(&conn, "sukamaju")?;
-/// assert!(matches!(result, wilayah::LookupResult::Ambiguous(_)));
-/// # Ok::<_, rusqlite::Error>(())
-/// ```
-pub fn find_by_name_unique(
-    conn: &rusqlite::Connection,
-    query: &str,
-) -> rusqlite::Result<LookupResult> {
-    db::search_unique(conn, query)
-}
-
-/// Find a village by its BMKG-compatible administrative code.
-///
-/// Returns `None` if the code is not found in the database.
-///
-/// # Example
-///
-/// ```
-/// let conn = wilayah::open()?;
-/// let v = wilayah::find_by_code(&conn, "31.71.03.1001")?;
-/// assert!(v.is_some());
-/// # Ok::<_, rusqlite::Error>(())
-/// ```
-pub fn find_by_code(conn: &rusqlite::Connection, code: &str) -> rusqlite::Result<Option<Village>> {
-    db::by_code(conn, code)
-}
-
-/// Find all villages matching an administrative code prefix with pagination.
-///
-/// Useful for listing all villages in a kecamatan (`"31.71.03"`),
-/// kabupaten (`"31.71"`), or province (`"31"`). Returns a paginated
-/// result with total count and a `has_more` flag.
-///
-/// # Arguments
-///
-/// * `conn` - Database connection from [`open()`]
-/// * `prefix` - Code prefix (e.g., `"31.71.03"`, `"31.71"`, `"31"`)
-/// * `limit` - Maximum number of results per page (clamped to 1..1000)
-/// * `offset` - Number of results to skip (for pagination)
-///
-/// # Example
-///
-/// ```
-/// let conn = wilayah::open()?;
-/// let result = wilayah::find_by_code_prefix(&conn, "31.71.03", 100, 0)?;
-/// assert!(!result.villages.is_empty());
-/// assert_eq!(result.total, result.villages.len() as usize); // all fit in one page
-/// # Ok::<_, rusqlite::Error>(())
-/// ```
-pub fn find_by_code_prefix(
-    conn: &rusqlite::Connection,
-    prefix: &str,
-    limit: usize,
-    offset: usize,
-) -> rusqlite::Result<PrefixResult> {
-    db::by_code_prefix(conn, prefix, limit, offset)
-}
-
-/// Reverse-geocode a lat/lon to the full administrative hierarchy.
-///
-/// Finds the nearest village centroid and returns the complete administrative
-/// hierarchy: province, city/regency, district, and village with their codes
-/// and names.
-///
-/// # Arguments
-///
-/// * `conn` - Database connection from [`open()`]
-/// * `lat` - Latitude (-90..90)
-/// * `lon` - Longitude (-180..180)
-///
-/// # Example
-///
-/// ```
-/// let conn = wilayah::open()?;
-/// if let Some(loc) = wilayah::locate(&conn, -6.1647, 106.8453)? {
-///     assert_eq!(loc.province.code, "31");
-///     assert!(loc.city.name.contains("Jakarta"));
-///     assert!(loc.dist_km < 5.0);
-///     assert_eq!(loc.method, wilayah::LocateMethod::Nearest);
-/// }
-/// # Ok::<_, rusqlite::Error>(())
-/// ```
-pub fn locate(
-    conn: &rusqlite::Connection,
-    lat: f64,
-    lon: f64,
-) -> rusqlite::Result<Option<Location>> {
-    db::locate(conn, lat, lon)
-}
-
-/// Get the total number of villages in the database.
-///
-/// # Example
-///
-/// ```
-/// let conn = wilayah::open()?;
-/// let count = wilayah::village_count(&conn)?;
-/// assert!(count > 80000);
-/// # Ok::<_, rusqlite::Error>(())
-/// ```
-pub fn village_count(conn: &rusqlite::Connection) -> rusqlite::Result<i64> {
-    conn.query_row("SELECT COUNT(*) FROM locations", [], |row| row.get(0))
 }
 
 #[cfg(test)]
@@ -346,15 +103,14 @@ mod tests {
 
     #[test]
     fn test_open_db() {
-        let conn = open().expect("should open embedded database");
-        let count = village_count(&conn).expect("should count villages");
+        let db = Database::open().expect("should open embedded database");
+        let count = db.village_count().expect("should count villages");
         assert!(count > 80000, "expected >80k villages, got {count}");
     }
 
     #[test]
     fn test_data_info() {
         let info = data_info();
-        // village_count may be 0 if the DB predates db_meta table
         if info.village_count > 0 {
             assert!(info.village_count > 80000);
         }
@@ -370,21 +126,21 @@ mod tests {
     }
 
     #[test]
-    fn test_data_info_from_conn() {
-        let conn = open().unwrap();
-        let info = data_info_from_conn(&conn);
+    fn test_data_info_via_database() {
+        let db = Database::open().unwrap();
+        let info = db.data_info();
         assert_eq!(info, data_info());
     }
 
     #[test]
     fn test_version() {
-        assert_eq!(version(), "0.4.0");
+        assert_eq!(version(), "0.5.0");
     }
 
     #[test]
     fn test_nearest_jakarta() {
-        let conn = open().unwrap();
-        let results = find_nearest(&conn, -6.1647, 106.8453, 1).unwrap();
+        let db = Database::open().unwrap();
+        let results = db.find_nearest(-6.1647, 106.8453, 1).unwrap();
         assert_eq!(results.len(), 1);
         let v = &results[0];
         assert!(
@@ -400,16 +156,16 @@ mod tests {
 
     #[test]
     fn test_nearest_papua() {
-        let conn = open().unwrap();
-        let results = find_nearest(&conn, -2.5, 140.0, 1).unwrap();
+        let db = Database::open().unwrap();
+        let results = db.find_nearest(-2.5, 140.0, 1).unwrap();
         assert!(!results.is_empty());
         assert!(results[0].province.contains("Papua"));
     }
 
     #[test]
     fn test_search() {
-        let conn = open().unwrap();
-        let results = find_by_name(&conn, "kemayoran", 5).unwrap();
+        let db = Database::open().unwrap();
+        let results = db.find_by_name("kemayoran", 5).unwrap();
         assert!(!results.is_empty(), "should find Kemayoran");
         assert!(results
             .iter()
@@ -418,16 +174,16 @@ mod tests {
 
     #[test]
     fn test_search_qualified() {
-        let conn = open().unwrap();
-        let results = find_by_name(&conn, "kemayoran jakarta", 5).unwrap();
+        let db = Database::open().unwrap();
+        let results = db.find_by_name("kemayoran jakarta", 5).unwrap();
         assert!(!results.is_empty(), "should find Kemayoran Jakarta");
         assert!(results.iter().all(|v| v.city.contains("Jakarta")));
     }
 
     #[test]
     fn test_unique_found() {
-        let conn = open().unwrap();
-        let result = find_by_name_unique(&conn, "abadijaya").unwrap();
+        let db = Database::open().unwrap();
+        let result = db.find_by_name_unique("abadijaya").unwrap();
         assert!(
             matches!(result, LookupResult::Found(_)),
             "expected Found, got {:?}",
@@ -440,8 +196,8 @@ mod tests {
 
     #[test]
     fn test_unique_ambiguous() {
-        let conn = open().unwrap();
-        let result = find_by_name_unique(&conn, "sukamaju").unwrap();
+        let db = Database::open().unwrap();
+        let result = db.find_by_name_unique("sukamaju").unwrap();
         assert!(
             matches!(result, LookupResult::Ambiguous(_)),
             "sukamaju should be ambiguous, got {:?}",
@@ -454,8 +210,8 @@ mod tests {
 
     #[test]
     fn test_find_by_code() {
-        let conn = open().unwrap();
-        let v = find_by_code(&conn, "31.71.03.1001").unwrap();
+        let db = Database::open().unwrap();
+        let v = db.find_by_code("31.71.03.1001").unwrap();
         assert!(v.is_some(), "31.71.03.1001 should exist");
         let v = v.unwrap();
         assert_eq!(v.name, "Kemayoran");
@@ -466,15 +222,15 @@ mod tests {
 
     #[test]
     fn test_find_by_code_not_found() {
-        let conn = open().unwrap();
-        let v = find_by_code(&conn, "99.99.99.9999").unwrap();
+        let db = Database::open().unwrap();
+        let v = db.find_by_code("99.99.99.9999").unwrap();
         assert!(v.is_none());
     }
 
     #[test]
     fn test_find_by_code_prefix_kecamatan() {
-        let conn = open().unwrap();
-        let result = find_by_code_prefix(&conn, "31.71.03", 100, 0).unwrap();
+        let db = Database::open().unwrap();
+        let result = db.find_by_code_prefix("31.71.03", 100, 0).unwrap();
         assert!(
             !result.villages.is_empty(),
             "should find villages in kecamatan 31.71.03"
@@ -484,29 +240,27 @@ mod tests {
             .iter()
             .all(|v| v.code.starts_with("31.71.03")));
         assert!(result.villages.iter().all(|v| v.district == "Kemayoran"));
-        // All villages should fit in one page, so has_more is false.
         assert_eq!(result.total, result.villages.len());
         assert!(!result.has_more);
     }
 
     #[test]
     fn test_find_by_code_prefix_kabupaten() {
-        let conn = open().unwrap();
-        let result = find_by_code_prefix(&conn, "31.71", 500, 0).unwrap();
+        let db = Database::open().unwrap();
+        let result = db.find_by_code_prefix("31.71", 500, 0).unwrap();
         assert!(
             !result.villages.is_empty(),
             "should find villages in kabupaten 31.71"
         );
         assert!(result.villages.iter().all(|v| v.code.starts_with("31.71")));
         assert!(result.total > 0);
-        // Consistency: has_more should be true if there are more beyond this page.
         assert_eq!(result.has_more, result.villages.len() < result.total);
     }
 
     #[test]
     fn test_find_by_code_prefix_not_found() {
-        let conn = open().unwrap();
-        let result = find_by_code_prefix(&conn, "99.99.99", 100, 0).unwrap();
+        let db = Database::open().unwrap();
+        let result = db.find_by_code_prefix("99.99.99", 100, 0).unwrap();
         assert!(result.villages.is_empty());
         assert_eq!(result.total, 0);
         assert!(!result.has_more);
@@ -514,8 +268,8 @@ mod tests {
 
     #[test]
     fn test_unique_not_found() {
-        let conn = open().unwrap();
-        let result = find_by_name_unique(&conn, "zzzznonexistent").unwrap();
+        let db = Database::open().unwrap();
+        let result = db.find_by_name_unique("zzzznonexistent").unwrap();
         assert!(
             matches!(result, LookupResult::NotFound),
             "should be not found, got {:?}",
@@ -525,8 +279,9 @@ mod tests {
 
     #[test]
     fn test_locate_jakarta() {
-        let conn = open().unwrap();
-        let loc = locate(&conn, -6.1647, 106.8453)
+        let db = Database::open().unwrap();
+        let loc = db
+            .locate(-6.1647, 106.8453)
             .unwrap()
             .expect("should locate Jakarta");
         assert_eq!(loc.province.code, "31");
@@ -540,8 +295,9 @@ mod tests {
 
     #[test]
     fn test_locate_display() {
-        let conn = open().unwrap();
-        let loc = locate(&conn, -6.1647, 106.8453)
+        let db = Database::open().unwrap();
+        let loc = db
+            .locate(-6.1647, 106.8453)
             .unwrap()
             .expect("should locate Jakarta");
         let s = format!("{loc}");
@@ -562,5 +318,62 @@ mod tests {
     fn test_locate_method_display() {
         assert_eq!(format!("{}", LocateMethod::Nearest), "nearest");
         assert_eq!(format!("{}", LocateMethod::Contained), "contained");
+    }
+
+    #[test]
+    fn test_haversine_km() {
+        let d = haversine_km(-6.1647, 106.8453, -6.1647, 106.8453);
+        assert!(d.abs() < 0.001, "same point should be 0 km, got {d}");
+        let d = haversine_km(-6.1647, 106.8453, -6.2, 106.8);
+        assert!(d > 0.0 && d < 50.0, "nearby point should be close, got {d}");
+    }
+
+    #[test]
+    fn test_location_from_village() {
+        let v = Village {
+            code: "31.71.03.1001".into(),
+            name: "Kemayoran".into(),
+            district: "Kemayoran".into(),
+            city: "Jakarta Pusat".into(),
+            province: "DKI Jakarta".into(),
+            lat: -6.1647,
+            lon: 106.8453,
+            dist_km: None,
+        };
+        let loc = location_from_village(&v, 1.5).expect("should parse valid code");
+        assert_eq!(loc.province.code, "31");
+        assert_eq!(loc.city.code, "31.71");
+        assert_eq!(loc.district.code, "31.71.03");
+        assert_eq!(loc.village_code, "31.71.03.1001");
+        assert_eq!(loc.dist_km, 1.5);
+        assert_eq!(loc.method, LocateMethod::Nearest);
+    }
+
+    #[test]
+    fn test_location_from_village_bad_code() {
+        let v = Village {
+            code: "invalid".into(),
+            name: "Test".into(),
+            district: "Test".into(),
+            city: "Test".into(),
+            province: "Test".into(),
+            lat: 0.0,
+            lon: 0.0,
+            dist_km: None,
+        };
+        assert!(location_from_village(&v, 0.0).is_none());
+    }
+
+    #[test]
+    fn test_error_display() {
+        let db = Database::open().unwrap();
+        let result = db.find_by_code("31.71.03.1001");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_database_is_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<Database>();
     }
 }

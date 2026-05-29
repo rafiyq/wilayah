@@ -5,16 +5,14 @@ use std::path::Path;
 fn main() {
     let snapshot_path = Path::new("data/cache/legacy_snapshot.json");
 
-    // Open embedded DB
-    let conn = match wilayah::open() {
-        Ok(conn) => conn,
+    let db = match wilayah::Database::open() {
+        Ok(db) => db,
         Err(e) => {
             eprintln!("error: failed to open embedded DB: {}", e);
             std::process::exit(1);
         }
     };
 
-    // Load snapshot
     let snapshot: Vec<serde_json::Value> = if snapshot_path.exists() {
         let content = fs::read_to_string(snapshot_path).expect("failed to read legacy snapshot");
         serde_json::from_str(&content).expect("failed to parse legacy snapshot")
@@ -27,7 +25,7 @@ fn main() {
         std::process::exit(1);
     };
 
-    // Load official DB into map
+    let conn = db.conn();
     let mut official_map: HashMap<String, OfficialVillage> = HashMap::new();
     let mut stmt = conn
         .prepare("SELECT kode, nama, kecamatan, kota, provinsi, lat, lon FROM locations")

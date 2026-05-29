@@ -11,22 +11,18 @@ use tokio::net::TcpListener;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
-use wilayah::{
-    find_by_code, find_by_code_prefix, find_by_name, find_nearest, locate, village_count, Village,
-};
+use wilayah::{Database, Village};
 
 struct AppState {
-    db: Mutex<rusqlite::Connection>,
+    db: Mutex<Database>,
 }
 
 impl AppState {
     fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        let conn = wilayah::open()?;
-        let count = village_count(&conn)?;
+        let db = Database::open()?;
+        let count = db.village_count()?;
         info!("Database loaded: {count} villages");
-        Ok(Self {
-            db: Mutex::new(conn),
-        })
+        Ok(Self { db: Mutex::new(db) })
     }
 }
 
@@ -77,7 +73,7 @@ fn default_offset() -> usize {
 struct IndexResponse {
     name: String,
     version: String,
-    village_count: i64,
+    village_count: u32,
 }
 
 #[derive(Serialize)]
@@ -109,7 +105,7 @@ struct LocateResponse {
 
 async fn index(state: State<Arc<AppState>>) -> Json<IndexResponse> {
     let db = state.db.lock().unwrap();
-    let count = village_count(&db).unwrap_or(0);
+    let count = db.village_count().unwrap_or(0);
     Json(IndexResponse {
         name: "wilayah".into(),
         version: env!("CARGO_PKG_VERSION").into(),
@@ -135,14 +131,16 @@ async fn nearest(
         params.lat, params.lon, limit
     );
     let db = state.db.lock().unwrap();
-    let results = find_nearest(&db, params.lat, params.lon, limit).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("{e}"),
-            }),
-        )
-    })?;
+    let results = db
+        .find_nearest(params.lat, params.lon, limit)
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("{e}"),
+                }),
+            )
+        })?;
     Ok(Json(results))
 }
 
@@ -161,7 +159,7 @@ async fn search(
     let limit = params.limit.clamp(1, 100);
     info!("search: q={}, limit={}", params.q, limit);
     let db = state.db.lock().unwrap();
-    let results = find_by_name(&db, &params.q, limit).map_err(|e| {
+    let results = db.find_by_name(&params.q, limit).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
@@ -188,7 +186,7 @@ async fn code(
             ));
         }
         info!("code: exact lookup for {}", code);
-        let result = find_by_code(&db, code).map_err(|e| {
+        let result = db.find_by_code(code).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
@@ -214,7 +212,7 @@ async fn code(
             "code: prefix lookup for {} (limit={}, offset={})",
             prefix, limit, offset
         );
-        let result = find_by_code_prefix(&db, prefix, limit, offset).map_err(|e| {
+        let result = db.find_by_code_prefix(prefix, limit, offset).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
@@ -253,7 +251,7 @@ async fn locate_handler(
     }
     info!("locate: lat={}, lon={}", params.lat, params.lon);
     let db = state.db.lock().unwrap();
-    let result = locate(&db, params.lat, params.lon).map_err(|e| {
+    let result = db.locate(params.lat, params.lon).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {

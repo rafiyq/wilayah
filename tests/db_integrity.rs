@@ -1,18 +1,17 @@
 use regex::Regex;
-use wilayah::{
-    data_info_from_conn, find_by_code, find_by_code_prefix, find_by_name, open, village_count,
-};
+use wilayah::Database;
 
 #[test]
 fn test_db_has_many_villages() {
-    let conn = open().expect("open embedded DB");
-    let count = village_count(&conn).expect("count villages");
+    let db = Database::open().expect("open embedded DB");
+    let count = db.village_count().expect("count villages");
     assert!(count > 80_000, "expected >80k villages, got {}", count);
 }
 
 #[test]
 fn test_all_codes_valid_format() {
-    let conn = open().unwrap();
+    let db = Database::open().unwrap();
+    let conn = db.conn();
     let mut stmt = conn.prepare("SELECT kode FROM locations").unwrap();
     let mut rows = stmt.query([]).unwrap();
     let re = Regex::new(r"^\d{2}\.\d{2}\.\d{2}\.\d{4}$").unwrap();
@@ -28,7 +27,8 @@ fn test_all_codes_valid_format() {
 
 #[test]
 fn test_no_duplicate_codes() {
-    let conn = open().unwrap();
+    let db = Database::open().unwrap();
+    let conn = db.conn();
     let mut stmt = conn
         .prepare("SELECT kode, COUNT(*) FROM locations GROUP BY kode HAVING COUNT(*) > 1")
         .unwrap();
@@ -44,7 +44,8 @@ fn test_no_duplicate_codes() {
 
 #[test]
 fn test_coordinates_within_bounds() {
-    let conn = open().unwrap();
+    let db = Database::open().unwrap();
+    let conn = db.conn();
     let mut stmt = conn
         .prepare("SELECT kode, lat, lon FROM locations")
         .unwrap();
@@ -54,11 +55,9 @@ fn test_coordinates_within_bounds() {
         let code: String = row.get(0).unwrap();
         let lat: f64 = row.get(1).unwrap();
         let lon: f64 = row.get(2).unwrap();
-        // Allow (0,0) as special fallback for villages without coordinates.
         if lat == 0.0 && lon == 0.0 {
             continue;
         }
-        // Approximate bounds of Indonesia
         if !(-11.0..=6.0).contains(&lat) || !(95.0..=141.0).contains(&lon) {
             out_of_bounds.push((code, lat, lon));
         }
@@ -72,7 +71,8 @@ fn test_coordinates_within_bounds() {
 
 #[test]
 fn test_rtree_matches_locations_count() {
-    let conn = open().unwrap();
+    let db = Database::open().unwrap();
+    let conn = db.conn();
     let loc_count: i64 = conn
         .query_row("SELECT COUNT(*) FROM locations", [], |row| row.get(0))
         .unwrap();
@@ -84,9 +84,8 @@ fn test_rtree_matches_locations_count() {
 
 #[test]
 fn test_fts_search_works() {
-    let conn = open().unwrap();
-    // Search for a known common village name; should return something.
-    let results = find_by_name(&conn, "kemayoran", 10).unwrap();
+    let db = Database::open().unwrap();
+    let results = db.find_by_name("kemayoran", 10).unwrap();
     assert!(!results.is_empty());
     assert!(results
         .iter()
@@ -95,8 +94,8 @@ fn test_fts_search_works() {
 
 #[test]
 fn test_find_by_code_known() {
-    let conn = open().unwrap();
-    let v = find_by_code(&conn, "31.71.03.1001").unwrap();
+    let db = Database::open().unwrap();
+    let v = db.find_by_code("31.71.03.1001").unwrap();
     assert!(v.is_some());
     let v = v.unwrap();
     assert_eq!(v.code, "31.71.03.1001");
@@ -105,21 +104,18 @@ fn test_find_by_code_known() {
 
 #[test]
 fn test_find_by_code_prefix_province() {
-    let conn = open().unwrap();
-    // Prefix "31" should return many villages (all in DKI Jakarta province)
-    let result = find_by_code_prefix(&conn, "31", 100, 0).unwrap();
+    let db = Database::open().unwrap();
+    let result = db.find_by_code_prefix("31", 100, 0).unwrap();
     assert!(!result.villages.is_empty());
     assert!(result.villages.iter().all(|v| v.code.starts_with("31")));
-    // Province-level query should exceed the limit, demonstrating pagination need
     assert!(result.total > 100);
     assert!(result.has_more);
 }
 
 #[test]
 fn test_db_meta_table() {
-    let conn = open().unwrap();
-    let info = data_info_from_conn(&conn);
-    // If db_meta exists (pipeline-rebuilt DB), verify values
+    let db = Database::open().unwrap();
+    let info = db.data_info();
     if info.village_count > 0 && info.build_date > 0 {
         assert!(
             !info.decree.contains("unknown"),

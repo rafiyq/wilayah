@@ -1,45 +1,294 @@
-use rusqlite::{functions::FunctionFlags, Connection, Result};
-use std::fmt;
+use rusqlite::{functions::FunctionFlags, Connection};
 use std::sync::OnceLock;
 
-use crate::DataInfo;
+use crate::types::{
+    haversine_km, location_from_village, DataInfo, Location, LookupResult, PrefixResult, Village,
+};
 
 const DB_BYTES: &[u8] = include_bytes!(env!("LOCATION_DB_PATH"));
 
-const EARTH_RADIUS_KM: f64 = 6371.0;
-
-fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
-    let dlat = (lat2 - lat1).to_radians();
-    let dlon = (lon2 - lon1).to_radians();
-    let a = (dlat / 2.0).sin().powi(2)
-        + lat1.to_radians().cos() * lat2.to_radians().cos() * (dlon / 2.0).sin().powi(2);
-    EARTH_RADIUS_KM * 2.0 * a.sqrt().asin()
+/// Error type for database operations.
+///
+/// Wraps internal `rusqlite` errors without exposing the `rusqlite::Error`
+/// type in the public API. Implements [`std::error::Error`] and can be
+/// converted from `rusqlite::Error` automatically.
+#[derive(Debug)]
+pub struct Error {
+    inner: rusqlite::Error,
 }
 
-/// Open the embedded database connection and register the Haversine UDF.
-pub fn open_embedded() -> Result<Connection> {
-    let mut conn = Connection::open_in_memory()?;
-    conn.execute_batch("PRAGMA journal_mode = OFF")?;
-    conn.deserialize_bytes("main", DB_BYTES)?;
-
-    conn.create_scalar_function(
-        "haversine_km",
-        4,
-        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
-        move |ctx| {
-            Ok(haversine_km(
-                ctx.get::<f64>(0)?,
-                ctx.get::<f64>(1)?,
-                ctx.get::<f64>(2)?,
-                ctx.get::<f64>(3)?,
-            ))
-        },
-    )?;
-
-    Ok(conn)
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.inner.fmt(f)
+    }
 }
 
-/// Read a key from the `db_meta` table.
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.inner)
+    }
+}
+
+impl From<rusqlite::Error> for Error {
+    fn from(e: rusqlite::Error) -> Self {
+        Error { inner: e }
+    }
+}
+
+/// Result type for database operations.
+pub type Result<T> = std::result::Result<T, Error>;
+
+/// An open handle to the embedded wilayah location database.
+///
+/// Wraps an internal SQLite connection and provides methods for querying
+/// Indonesian village data. The `rusqlite::Connection` is kept private so
+/// that the crate's public API is independent of the `rusqlite` major version.
+///
+/// # Thread safety
+///
+/// `Database` is `Send` but not `Sync`, matching the underlying SQLite
+/// connection. To share across threads, wrap in `std::sync::Mutex<Database>`.
+///
+/// # Example
+///
+/// ```
+/// let db = wilayah::Database::open()?;
+/// let results = db.find_nearest(-6.1647, 106.8453, 5)?;
+/// # Ok::<_, wilayah::Error>(())
+/// ```
+pub struct Database {
+    conn: Connection,
+}
+
+impl Database {
+    /// Open the embedded location database.
+    ///
+    /// Loads the ~20 MB SQLite database from the compiled binary into memory
+    /// using SQLite's online backup API. The database contains village records
+    /// with spatial (RTree) and full-text (FTS5) indexes.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// let db = wilayah::Database::open()?;
+    /// # Ok::<_, wilayah::Error>(())
+    /// ```
+    pub fn open() -> Result<Self> {
+        let mut conn = Connection::open_in_memory()?;
+        conn.execute_batch("PRAGMA journal_mode = OFF")?;
+        conn.deserialize_bytes("main", DB_BYTES)?;
+
+        conn.create_scalar_function(
+            "haversine_km",
+            4,
+            FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+            move |ctx| {
+                Ok(haversine_km(
+                    ctx.get::<f64>(0)?,
+                    ctx.get::<f64>(1)?,
+                    ctx.get::<f64>(2)?,
+                    ctx.get::<f64>(3)?,
+                ))
+            },
+        )?;
+
+        Ok(Database { conn })
+    }
+
+    /// Find the nearest villages to a given latitude/longitude.
+    ///
+    /// Uses a SQLite RTree spatial index for fast bounding-box filtering,
+    /// followed by Haversine distance calculation to find the closest villages.
+    /// The search progressively expands the search radius until results are
+    /// found or the full globe has been searched.
+    ///
+    /// # Arguments
+    ///
+    /// * `lat` - Latitude (-90..90)
+    /// * `lon` - Longitude (-180..180)
+    /// * `limit` - Maximum number of results to return (clamped to 1..20)
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// let db = wilayah::Database::open()?;
+    /// let results = db.find_nearest(-6.1647, 106.8453, 5)?;
+    /// for v in results {
+    ///     println!("{} ({:.1} km)", v.name, v.dist_km.unwrap());
+    /// }
+    /// # Ok::<_, wilayah::Error>(())
+    /// ```
+    pub fn find_nearest(&self, lat: f64, lon: f64, limit: usize) -> Result<Vec<Village>> {
+        nearest(&self.conn, lat, lon, limit)
+    }
+
+    /// Search for villages by name.
+    ///
+    /// Uses FTS5 full-text search matching against village name, district,
+    /// city, and province. Supports partial matches and returns results
+    /// ranked by BM25.
+    ///
+    /// For disambiguation, include city or province in the query:
+    /// `find_by_name("kemayoran jakarta")` returns only villages in Jakarta.
+    ///
+    /// # Arguments
+    ///
+    /// * `query` - Search query (e.g., `"kemayoran"` or `"kemayoran jakarta"`)
+    /// * `limit` - Maximum number of results to return (clamped to 1..100)
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// let db = wilayah::Database::open()?;
+    /// let results = db.find_by_name("kemayoran jakarta", 10)?;
+    /// for v in results {
+    ///     println!("{} in {}, {}", v.name, v.district, v.province);
+    /// }
+    /// # Ok::<_, wilayah::Error>(())
+    /// ```
+    pub fn find_by_name(&self, query: &str, limit: usize) -> Result<Vec<Village>> {
+        search(&self.conn, query, limit)
+    }
+
+    /// Search for a unique village by name.
+    ///
+    /// Returns [`LookupResult::Found`] if exactly one match exists,
+    /// [`LookupResult::Ambiguous`] with up to 20 candidates if multiple match,
+    /// or [`LookupResult::NotFound`] if no match exists.
+    ///
+    /// # Arguments
+    ///
+    /// * `query` - Search query (e.g., `"kemayoran"` or `"kemayoran jakarta"`)
+    ///
+    /// # Example: exact match
+    ///
+    /// ```
+    /// let db = wilayah::Database::open()?;
+    /// let result = db.find_by_name_unique("abadijaya")?;
+    /// if let wilayah::LookupResult::Found(v) = result {
+    ///     println!("Found: {} in {}", v.name, v.city);
+    /// }
+    /// # Ok::<_, wilayah::Error>(())
+    /// ```
+    pub fn find_by_name_unique(&self, query: &str) -> Result<LookupResult> {
+        search_unique(&self.conn, query)
+    }
+
+    /// Find a village by its BMKG-compatible administrative code.
+    ///
+    /// Returns `None` if the code is not found in the database.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// let db = wilayah::Database::open()?;
+    /// let v = db.find_by_code("31.71.03.1001")?;
+    /// assert!(v.is_some());
+    /// # Ok::<_, wilayah::Error>(())
+    /// ```
+    pub fn find_by_code(&self, code: &str) -> Result<Option<Village>> {
+        by_code(&self.conn, code)
+    }
+
+    /// Find all villages matching an administrative code prefix with pagination.
+    ///
+    /// Useful for listing all villages in a kecamatan (`"31.71.03"`),
+    /// kabupaten (`"31.71"`), or province (`"31"`). Returns a paginated
+    /// result with total count and a `has_more` flag.
+    ///
+    /// # Arguments
+    ///
+    /// * `prefix` - Code prefix (e.g., `"31.71.03"`, `"31.71"`, `"31"`)
+    /// * `limit` - Maximum number of results per page (clamped to 1..1000)
+    /// * `offset` - Number of results to skip (for pagination)
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// let db = wilayah::Database::open()?;
+    /// let result = db.find_by_code_prefix("31.71.03", 100, 0)?;
+    /// assert!(!result.villages.is_empty());
+    /// # Ok::<_, wilayah::Error>(())
+    /// ```
+    pub fn find_by_code_prefix(
+        &self,
+        prefix: &str,
+        limit: usize,
+        offset: usize,
+    ) -> Result<PrefixResult> {
+        by_code_prefix(&self.conn, prefix, limit, offset)
+    }
+
+    /// Reverse-geocode a lat/lon to the full administrative hierarchy.
+    ///
+    /// Finds the nearest village centroid and returns the complete
+    /// administrative hierarchy: province, city/regency, district, and
+    /// village with their codes and names.
+    ///
+    /// # Arguments
+    ///
+    /// * `lat` - Latitude (-90..90)
+    /// * `lon` - Longitude (-180..180)
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// let db = wilayah::Database::open()?;
+    /// if let Some(loc) = db.locate(-6.1647, 106.8453)? {
+    ///     assert_eq!(loc.province.code, "31");
+    ///     assert!(loc.city.name.contains("Jakarta"));
+    /// }
+    /// # Ok::<_, wilayah::Error>(())
+    /// ```
+    pub fn locate(&self, lat: f64, lon: f64) -> Result<Option<Location>> {
+        locate(&self.conn, lat, lon)
+    }
+
+    /// Get metadata about the embedded location database.
+    ///
+    /// Reads the `db_meta` table for decree, source, build date, and
+    /// village count. Returns default values if the table is missing
+    /// or keys are absent.
+    pub fn data_info(&self) -> DataInfo {
+        data_info_from_conn(&self.conn)
+    }
+
+    /// Get the total number of villages in the database.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// let db = wilayah::Database::open()?;
+    /// let count = db.village_count()?;
+    /// assert!(count > 80000);
+    /// # Ok::<_, wilayah::Error>(())
+    /// ```
+    pub fn village_count(&self) -> Result<u32> {
+        let count: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM locations", [], |row| row.get(0))?;
+        Ok(count as u32)
+    }
+}
+
+/// Get the underlying `rusqlite::Connection`.
+///
+/// This is intended for advanced use cases that need direct SQLite access
+/// (e.g., custom queries, attaching additional databases). Using this
+/// accessor makes your code dependent on `rusqlite`'s API, which may
+/// change across major versions independently of `wilayah`'s semver.
+///
+/// Only available with the `raw-sqlite` feature flag.
+#[cfg(feature = "raw-sqlite")]
+impl Database {
+    /// Get a reference to the underlying `rusqlite::Connection`.
+    ///
+    /// See the [feature flag documentation](#feature-flags) for caveats.
+    pub fn conn(&self) -> &Connection {
+        &self.conn
+    }
+}
+
 fn query_meta(conn: &Connection, key: &str) -> Option<String> {
     conn.query_row("SELECT value FROM db_meta WHERE key = ?1", [key], |row| {
         row.get(0)
@@ -47,11 +296,7 @@ fn query_meta(conn: &Connection, key: &str) -> Option<String> {
     .ok()
 }
 
-/// Get metadata about the database from an existing connection.
-///
-/// Reads the `db_meta` table for decree, source, build date, and village count.
-/// Returns default values if the table is missing or keys are absent.
-pub fn data_info_from_conn(conn: &Connection) -> DataInfo {
+fn data_info_from_conn(conn: &Connection) -> DataInfo {
     DataInfo {
         source: query_meta(conn, "source").unwrap_or_else(|| "unknown".to_string()),
         decree: query_meta(conn, "decree").unwrap_or_else(|| "unknown".to_string()),
@@ -64,22 +309,16 @@ pub fn data_info_from_conn(conn: &Connection) -> DataInfo {
     }
 }
 
-/// Cached `DataInfo` — opened once, reused on subsequent calls.
 static CACHED_DATA_INFO: OnceLock<DataInfo> = OnceLock::new();
 
-/// Get metadata about the embedded location database (cached).
-///
-/// Opens the database on first call and caches the result.
-/// Subsequent calls return the cached value without re-opening the database.
-pub fn cached_data_info() -> &'static DataInfo {
+pub(crate) fn cached_data_info() -> &'static DataInfo {
     CACHED_DATA_INFO.get_or_init(|| {
-        let conn = open_embedded().expect("failed to open embedded database for metadata");
-        data_info_from_conn(&conn)
+        let db = Database::open().expect("failed to open embedded database for metadata");
+        db.data_info()
     })
 }
 
-/// Find nearest villages using RTree spatial index + Haversine distance.
-pub fn nearest(conn: &Connection, lat: f64, lon: f64, limit: usize) -> Result<Vec<Village>> {
+fn nearest(conn: &Connection, lat: f64, lon: f64, limit: usize) -> Result<Vec<Village>> {
     let limit = limit.clamp(1, 20);
 
     let deltas: [f64; 10] = [0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0, 15.0, 45.0, 180.0];
@@ -121,8 +360,9 @@ pub fn nearest(conn: &Connection, lat: f64, lon: f64, limit: usize) -> Result<Ve
             },
         )?;
 
-        let results: Result<Vec<_>> = rows.collect();
-        let results = results?;
+        let results: Vec<Village> = rows
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Error::from)?;
 
         if results.len() >= limit {
             return Ok(results);
@@ -132,8 +372,7 @@ pub fn nearest(conn: &Connection, lat: f64, lon: f64, limit: usize) -> Result<Ve
     Ok(vec![])
 }
 
-/// Search villages by name using FTS5 full-text search.
-pub fn search(conn: &Connection, query: &str, limit: usize) -> Result<Vec<Village>> {
+fn search(conn: &Connection, query: &str, limit: usize) -> Result<Vec<Village>> {
     let limit = limit.clamp(1, 100);
 
     let sql = "
@@ -159,11 +398,11 @@ pub fn search(conn: &Connection, query: &str, limit: usize) -> Result<Vec<Villag
         })
     })?;
 
-    rows.collect()
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(Error::from)
 }
 
-/// Lookup a village by its BMKG administrative code (e.g., `31.71.03.1001`).
-pub fn by_code(conn: &Connection, code: &str) -> Result<Option<Village>> {
+fn by_code(conn: &Connection, code: &str) -> Result<Option<Village>> {
     let mut stmt = conn.prepare_cached(
         "SELECT kode, nama, kecamatan, kota, provinsi, lat, lon
          FROM locations
@@ -183,26 +422,12 @@ pub fn by_code(conn: &Connection, code: &str) -> Result<Option<Village>> {
     })?;
     match rows.next() {
         Some(Ok(v)) => Ok(Some(v)),
-        Some(Err(e)) => Err(e),
+        Some(Err(e)) => Err(Error::from(e)),
         None => Ok(None),
     }
 }
 
-/// Lookup all villages matching an administrative code prefix with pagination.
-///
-/// Useful for listing all villages in a kecamatan (`"31.71.03"`),
-/// kabupaten (`"31.71"`), or province (`"31"`). Returns a paginated
-/// result with total count and a `has_more` flag.
-///
-/// # Arguments
-///
-/// * `conn` - Database connection
-/// * `prefix` - Code prefix (e.g., `"31.71.03"`, `"31.71"`, `"31"`)
-/// * `limit` - Maximum number of results per page (clamped to 1..1000)
-/// * `offset` - Number of results to skip (for pagination)
-///
-/// Returns a `PrefixResult` containing villages, total count, and pagination flag.
-pub fn by_code_prefix(
+fn by_code_prefix(
     conn: &Connection,
     prefix: &str,
     limit: usize,
@@ -243,7 +468,9 @@ pub fn by_code_prefix(
             })
         },
     )?;
-    let villages: Vec<Village> = rows.collect::<Result<Vec<_>>>()?;
+    let villages: Vec<Village> = rows
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(Error::from)?;
 
     let has_more = offset + villages.len() < total;
 
@@ -254,11 +481,7 @@ pub fn by_code_prefix(
     })
 }
 
-/// Search for a single unique village by name.
-///
-/// Returns a single match if exactly one result exists, otherwise returns all
-/// matches (up to 20) for the caller to disambiguate.
-pub fn search_unique(conn: &Connection, query: &str) -> Result<LookupResult> {
+fn search_unique(conn: &Connection, query: &str) -> Result<LookupResult> {
     let mut stmt = conn.prepare_cached(
         "SELECT l.kode, l.nama, l.kecamatan, l.kota, l.provinsi, l.lat, l.lon
          FROM locations_fts f
@@ -279,7 +502,9 @@ pub fn search_unique(conn: &Connection, query: &str) -> Result<LookupResult> {
             dist_km: None,
         })
     })?;
-    let results: Vec<_> = rows.collect::<Result<Vec<_>>>()?;
+    let results: Vec<_> = rows
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(Error::from)?;
 
     Ok(match results.len() {
         0 => LookupResult::NotFound,
@@ -288,190 +513,7 @@ pub fn search_unique(conn: &Connection, query: &str) -> Result<LookupResult> {
     })
 }
 
-/// Result of an unambiguous name lookup.
-///
-/// Implements [`Display`] for friendly CLI output:
-///
-/// ```ignore
-/// match result {
-///     LookupResult::Found(v) => println!("{v}"),
-///     LookupResult::Ambiguous(list) => println!("{result}"),
-///     LookupResult::NotFound => eprintln!("{result}"),
-/// }
-/// ```
-#[derive(Debug, Clone)]
-pub enum LookupResult {
-    /// Exactly one match
-    Found(Village),
-    /// Multiple matches found
-    Ambiguous(Vec<Village>),
-    /// No matches
-    NotFound,
-}
-
-impl fmt::Display for LookupResult {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            LookupResult::Found(v) => write!(f, "{}", v),
-            LookupResult::Ambiguous(list) => {
-                writeln!(f, "Found {} matching villages:", list.len())?;
-                for (i, v) in list.iter().enumerate() {
-                    writeln!(f, "  {}. {}", i + 1, v)?;
-                }
-                write!(
-                    f,
-                    "Use a more specific query (e.g., include city or province)"
-                )
-            }
-            LookupResult::NotFound => write!(f, "No matching village found"),
-        }
-    }
-}
-
-/// Paginated result from a code prefix lookup.
-pub struct PrefixResult {
-    /// The villages in this page of results.
-    pub villages: Vec<Village>,
-    /// Total number of villages matching the prefix.
-    pub total: usize,
-    /// Whether more results exist beyond this page.
-    pub has_more: bool,
-}
-
-impl fmt::Display for PrefixResult {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{} result(s), total: {}, has_more: {}",
-            self.villages.len(),
-            self.total,
-            self.has_more,
-        )
-    }
-}
-
-/// A village record with administrative hierarchy and coordinates.
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
-pub struct Village {
-    /// BMKG-compatible administrative code (e.g., `31.71.03.1001`)
-    pub code: String,
-    /// Village (desa/kelurahan) name
-    pub name: String,
-    /// District (kecamatan) name
-    pub district: String,
-    /// City/regency (kabupaten/kota) name
-    pub city: String,
-    /// Province name
-    pub province: String,
-    /// Latitude coordinate
-    pub lat: f64,
-    /// Longitude coordinate
-    pub lon: f64,
-    /// Distance from query point in kilometers.
-    /// Only set by `find_nearest()`, always `None` from `find_by_name()`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub dist_km: Option<f64>,
-}
-
-impl fmt::Display for Village {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{} — {}, {}, {} ({})",
-            self.name, self.district, self.city, self.province, self.code
-        )
-    }
-}
-
-/// Method used to determine the administrative location.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-pub enum LocateMethod {
-    /// Matched by nearest village centroid (Haversine distance).
-    Nearest,
-    /// Matched by polygon containment (future).
-    Contained,
-}
-
-impl fmt::Display for LocateMethod {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            LocateMethod::Nearest => write!(f, "nearest"),
-            LocateMethod::Contained => write!(f, "contained"),
-        }
-    }
-}
-
-/// A single level of the administrative hierarchy with code and name.
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
-pub struct AdminLevel {
-    /// Administrative code for this level (e.g., `"31"`, `"31.71"`, `"31.71.03"`).
-    pub code: String,
-    /// Name of this administrative unit.
-    pub name: String,
-}
-
-impl fmt::Display for AdminLevel {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} {}", self.code, self.name)
-    }
-}
-
-/// Result of a reverse-geocode lookup showing the full administrative hierarchy.
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
-pub struct Location {
-    /// Province level (code + name).
-    pub province: AdminLevel,
-    /// City/regency (kabupaten/kota) level.
-    pub city: AdminLevel,
-    /// District (kecamatan) level.
-    pub district: AdminLevel,
-    /// Village (desa/kelurahan) name.
-    pub village: String,
-    /// Village administrative code (e.g., `"31.71.03.1001"`).
-    pub village_code: String,
-    /// Latitude of the matched village centroid.
-    pub lat: f64,
-    /// Longitude of the matched village centroid.
-    pub lon: f64,
-    /// Distance in km from the query point to the matched village centroid.
-    pub dist_km: f64,
-    /// Method used to determine this location.
-    pub method: LocateMethod,
-}
-
-impl fmt::Display for Location {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "{}", self.province)?;
-        writeln!(f, "  {}", self.city)?;
-        writeln!(f, "  {}", self.district)?;
-        writeln!(
-            f,
-            "  {} {} ({:.1} km, {})",
-            self.village_code, self.village, self.dist_km, self.method
-        )
-    }
-}
-
-/// Reverse-geocode a lat/lon to the full administrative hierarchy.
-///
-/// Finds the nearest village centroid and parses its administrative code
-/// to build the province, city, and district hierarchy.
-///
-/// # Arguments
-///
-/// * `conn` - Database connection from [`open_embedded`]
-/// * `lat` - Latitude (-90..90)
-/// * `lon` - Longitude (-180..180)
-///
-/// # Example
-///
-/// ```ignore
-/// let conn = wilayah::open()?;
-/// if let Some(loc) = wilayah::locate(&conn, -6.1647, 106.8453)? {
-///     println!("{loc}");
-/// }
-/// ```
-pub fn locate(conn: &Connection, lat: f64, lon: f64) -> Result<Option<Location>> {
+fn locate(conn: &Connection, lat: f64, lon: f64) -> Result<Option<Location>> {
     let mut results = nearest(conn, lat, lon, 1)?;
     let village = match results.pop() {
         Some(v) => v,
@@ -479,34 +521,5 @@ pub fn locate(conn: &Connection, lat: f64, lon: f64) -> Result<Option<Location>>
     };
 
     let dist_km = village.dist_km.unwrap_or(0.0);
-
-    let parts: Vec<&str> = village.code.split('.').collect();
-    if parts.len() != 4 {
-        return Ok(None);
-    }
-
-    let province_code = parts[0].to_string();
-    let city_code = format!("{}.{}", parts[0], parts[1]);
-    let district_code = format!("{}.{}.{}", parts[0], parts[1], parts[2]);
-
-    Ok(Some(Location {
-        province: AdminLevel {
-            code: province_code,
-            name: village.province.clone(),
-        },
-        city: AdminLevel {
-            code: city_code,
-            name: village.city.clone(),
-        },
-        district: AdminLevel {
-            code: district_code,
-            name: village.district.clone(),
-        },
-        village: village.name,
-        village_code: village.code,
-        lat: village.lat,
-        lon: village.lon,
-        dist_km,
-        method: LocateMethod::Nearest,
-    }))
+    Ok(location_from_village(&village, dist_km))
 }

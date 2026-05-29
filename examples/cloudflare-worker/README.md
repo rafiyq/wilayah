@@ -45,6 +45,8 @@ database_name = "wilayah-locations"
 database_id = "YOUR_DATABASE_ID_HERE"
 ```
 
+**Note:** The `database_id` in `wrangler.toml` uses a placeholder (`REPLACE_WITH_YOUR_DATABASE_ID`). For local development, replace it manually. For CI deployment, it's substituted automatically from a GitHub secret (see below).
+
 ### 3. Import data
 
 First, ensure the wilayah database exists at `../../data/locations.db`. If not:
@@ -74,6 +76,28 @@ npx wrangler dev
 ```bash
 npx wrangler deploy
 ```
+
+### 6. CI Deployment (GitHub Actions)
+
+A `deploy-worker.yml` workflow is included for automated deployment. It substitutes the `database_id` placeholder in `wrangler.toml` from a GitHub secret before running `wrangler deploy`.
+
+**Required GitHub secrets:**
+
+| Secret | Description |
+|--------|-------------|
+| `CLOUDFLARE_API_TOKEN` | Wrangler API token (from Cloudflare dashboard) |
+| `D1_DATABASE_ID` | The D1 database ID from `wrangler d1 create` |
+
+**How it works:**
+
+The workflow runs `sed` to replace the placeholder before deploying:
+
+```bash
+sed -i "s/REPLACE_WITH_YOUR_DATABASE_ID/$D1_DATABASE_ID/g" wrangler.toml
+npx wrangler deploy
+```
+
+The workflow triggers on manual dispatch (`workflow_dispatch`) and on pushes that modify `examples/cloudflare-worker/`.
 
 ## Differences from the axum server example
 
