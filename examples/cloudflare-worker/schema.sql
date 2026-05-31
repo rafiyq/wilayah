@@ -11,3 +11,8 @@ CREATE TABLE IF NOT EXISTS locations (
 
 CREATE INDEX IF NOT EXISTS idx_locations_lat_lon ON locations(lat, lon);
 CREATE INDEX IF NOT EXISTS idx_locations_kode ON locations(kode);
+
+CREATE TABLE IF NOT EXISTS db_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);

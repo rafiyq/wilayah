@@ -12,6 +12,8 @@ A Cloudflare Worker that serves the wilayah Indonesian village lookup API, backe
 | `GET /code?q=` | Exact code lookup |
 | `GET /code?prefix=&limit=&offset=` | Code prefix lookup with pagination |
 | `GET /locate?lat=&lon=` | Reverse-geocode to administrative hierarchy |
+| `PUT /update` | Upsert village records (auth required) |
+| `PUT /update/meta` | Upsert db_meta key-value pairs (auth required) |
 
 All responses are JSON with CORS headers.
 
@@ -63,21 +65,53 @@ Then run the import script:
 ./import_db.sh
 ```
 
-This creates the schema, exports data from the local SQLite database, and imports it into D1 in batches.
+This creates the schema, exports data from the local SQLite database, and imports it into D1 in batches. It also exports `db_meta` rows if present.
 
-### 4. Run locally
+### 4. Set up authentication
+
+The `PUT /update` and `PUT /update/meta` endpoints require a Bearer token. Set the `ADMIN_TOKEN` secret via wrangler:
+
+```bash
+wrangler secret put ADMIN_TOKEN
+```
+
+Then pass the token in the `Authorization` header when calling the endpoints.
+
+### 5. Updating data via API
+
+After the initial import, you can incrementally update village records and metadata via the API:
+
+```bash
+# Upsert village records
+curl -X PUT https://your-worker.workers.dev/update \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"villages":[{"kode":"33.12.24.2002","nama":"Sukodono","kecamatan":"Sukodono","kota":"Kab. Sragen","provinsi":"Jawa Tengah","lat":-7.43,"lon":111.02}]}'
+
+# Upsert metadata
+curl -X PUT https://your-worker.workers.dev/update/meta \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"meta":{"data_version":"2025-01","village_count":"83468"}}'
+```
+
+- `PUT /update` accepts up to 500 villages per request.
+- `PUT /update/meta` accepts any number of key-value pairs.
+- Both use `INSERT OR REPLACE` (upsert) semantics.
+
+### 6. Run locally
 
 ```bash
 npx wrangler dev
 ```
 
-### 5. Deploy
+### 7. Deploy
 
 ```bash
 npx wrangler deploy
 ```
 
-### 6. CI Deployment (GitHub Actions)
+### 8. CI Deployment (GitHub Actions)
 
 A `deploy-worker.yml` workflow is included for automated deployment. It substitutes the `database_id` placeholder in `wrangler.toml` from a GitHub secret before running `wrangler deploy`.
 

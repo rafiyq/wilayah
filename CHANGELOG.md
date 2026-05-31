@@ -2,19 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
-## 0.5.0 - 2026-05-29
+## 0.5.0 - 2026-05-31
 
 ### Added
 
 - `Database` struct — wraps an internal SQLite connection, hiding `rusqlite` from the public API
 - `wilayah::Error` — custom error type that wraps `rusqlite::Error` without exposing it
 - `wilayah::Result<T>` — type alias for `std::result::Result<T, Error>`
-- `raw-sqlite` feature flag — exposes `Database::conn()` for direct `rusqlite::Connection` access
+- `raw-sqlite` feature flag — exposes `Database::conn()` and `Database::conn_guard()` for direct `rusqlite::Connection` access
 - `types` module — always available, contains shared types independent of `rusqlite`
-- `Serialize` derive on `PrefixResult`
+- `Serialize` derive on `PrefixResult`, `DataInfo`, `LookupResult`
+- `Serialize` impl on `Error` (serializes as string)
+- `Database` is now `Send + Sync` — internal `Connection` wrapped in `Mutex`
+- `Database::conn_guard()` — safe accessor for the underlying `MutexGuard<Connection>` (`raw-sqlite` feature)
 - Cloudflare Worker example with D1 backend (`examples/cloudflare-worker/`)
 - `deploy-worker.yml` GitHub Actions workflow for Worker deployment
 - `.gitignore` for cloudflare-worker directory and `.dev.vars`
+- `PUT /update` and `PUT /update/meta` endpoints in Cloudflare Worker (auth-gated via `ADMIN_TOKEN` secret)
+- CORS preflight (`OPTIONS`) handler in Cloudflare Worker
+- `GET /locate` endpoint documented in README
 
 ### Changed
 
@@ -22,10 +28,12 @@ All notable changes to this project will be documented in this file.
 - **BREAKING**: All query functions now return `wilayah::Result<T>` instead of `rusqlite::Result<T>`
 - **BREAKING**: `open()` renamed to `Database::open()` and returns `Result<Database>` instead of `rusqlite::Result<Connection>`
 - **BREAKING**: `village_count()` now returns `Result<u32>` instead of `Result<i64>` (consistent with `DataInfo.village_count`)
+- **BREAKING**: `Database::conn()` replaced by `Database::conn_guard()` which returns `MutexGuard<Connection>` (derefs to `&Connection`)
 - `data_info()` free function now internally uses `Database::open()` instead of `Connection::open_in_memory()` directly
 - `Database::data_info()` method added as the preferred way to get metadata
+- axum `serve.rs` example simplified: `Arc<Mutex<Database>>` → `Arc<Database>` (no more lock contention)
 - CI workflow now runs `cargo fmt --check --all` and `cargo test --features raw-sqlite`
-- Integration tests gated behind `raw-sqlite` feature (they use `Database::conn()`)
+- Integration tests gated behind `raw-sqlite` feature (they use `Database::conn_guard()`)
 
 ### Removed
 

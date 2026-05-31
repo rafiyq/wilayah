@@ -25,7 +25,7 @@ pub fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
 /// Metadata is read from the `db_meta` table embedded in the database itself,
 /// so it is always correct regardless of how the binary was built (pipeline mode
 /// or download mode).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct DataInfo {
     /// The upstream data source (e.g., `"official"` or `"release"`).
     pub source: String,
@@ -183,7 +183,7 @@ pub fn location_from_village(v: &Village, dist_km: f64) -> Option<Location> {
 ///     LookupResult::NotFound => eprintln!("{result}"),
 /// }
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub enum LookupResult {
     /// Exactly one match
     Found(Village),

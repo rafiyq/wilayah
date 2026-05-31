@@ -25,7 +25,7 @@ fn main() {
         std::process::exit(1);
     };
 
-    let conn = db.conn();
+    let conn = db.conn_guard();
     let mut official_map: HashMap<String, OfficialVillage> = HashMap::new();
     let mut stmt = conn
         .prepare("SELECT kode, nama, kecamatan, kota, provinsi, lat, lon FROM locations")

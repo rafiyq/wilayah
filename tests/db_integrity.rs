@@ -11,7 +11,7 @@ fn test_db_has_many_villages() {
 #[test]
 fn test_all_codes_valid_format() {
     let db = Database::open().unwrap();
-    let conn = db.conn();
+    let conn = db.conn_guard();
     let mut stmt = conn.prepare("SELECT kode FROM locations").unwrap();
     let mut rows = stmt.query([]).unwrap();
     let re = Regex::new(r"^\d{2}\.\d{2}\.\d{2}\.\d{4}$").unwrap();
@@ -28,7 +28,7 @@ fn test_all_codes_valid_format() {
 #[test]
 fn test_no_duplicate_codes() {
     let db = Database::open().unwrap();
-    let conn = db.conn();
+    let conn = db.conn_guard();
     let mut stmt = conn
         .prepare("SELECT kode, COUNT(*) FROM locations GROUP BY kode HAVING COUNT(*) > 1")
         .unwrap();
@@ -45,7 +45,7 @@ fn test_no_duplicate_codes() {
 #[test]
 fn test_coordinates_within_bounds() {
     let db = Database::open().unwrap();
-    let conn = db.conn();
+    let conn = db.conn_guard();
     let mut stmt = conn
         .prepare("SELECT kode, lat, lon FROM locations")
         .unwrap();
@@ -72,7 +72,7 @@ fn test_coordinates_within_bounds() {
 #[test]
 fn test_rtree_matches_locations_count() {
     let db = Database::open().unwrap();
-    let conn = db.conn();
+    let conn = db.conn_guard();
     let loc_count: i64 = conn
         .query_row("SELECT COUNT(*) FROM locations", [], |row| row.get(0))
         .unwrap();

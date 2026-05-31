@@ -43,7 +43,7 @@
 //!   [`AdminLevel`], [`LocateMethod`]) and [`haversine_km()`]. Use this with
 //!   `default-features = false` when you only need the types (e.g., Cloudflare
 //!   Workers with a different database backend).
-//! - **`raw-sqlite`** — Exposes `Database::conn()` for direct `rusqlite`
+//! - **`raw-sqlite`** — Exposes `Database::conn_guard()` for direct `rusqlite`
 //!   access. Using this accessor makes your code dependent on `rusqlite`'s API.
 
 #![deny(missing_docs)]
@@ -372,8 +372,10 @@ mod tests {
     }
 
     #[test]
-    fn test_database_is_send() {
+    fn test_database_is_send_sync() {
         fn assert_send<T: Send>() {}
+        fn assert_sync<T: Sync>() {}
         assert_send::<Database>();
+        assert_sync::<Database>();
     }
 }

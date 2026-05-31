@@ -6,7 +6,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tokio::net::TcpListener;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::info;
@@ -14,7 +14,7 @@ use tracing_subscriber::EnvFilter;
 use wilayah::{Database, Village};
 
 struct AppState {
-    db: Mutex<Database>,
+    db: Database,
 }
 
 impl AppState {
@@ -22,7 +22,7 @@ impl AppState {
         let db = Database::open()?;
         let count = db.village_count()?;
         info!("Database loaded: {count} villages");
-        Ok(Self { db: Mutex::new(db) })
+        Ok(Self { db })
     }
 }
 
@@ -104,8 +104,7 @@ struct LocateResponse {
 }
 
 async fn index(state: State<Arc<AppState>>) -> Json<IndexResponse> {
-    let db = state.db.lock().unwrap();
-    let count = db.village_count().unwrap_or(0);
+    let count = state.db.village_count().unwrap_or(0);
     Json(IndexResponse {
         name: "wilayah".into(),
         version: env!("CARGO_PKG_VERSION").into(),
@@ -130,8 +129,8 @@ async fn nearest(
         "nearest: lat={}, lon={}, limit={}",
         params.lat, params.lon, limit
     );
-    let db = state.db.lock().unwrap();
-    let results = db
+    let results = state
+        .db
         .find_nearest(params.lat, params.lon, limit)
         .map_err(|e| {
             (
@@ -158,8 +157,7 @@ async fn search(
     }
     let limit = params.limit.clamp(1, 100);
     info!("search: q={}, limit={}", params.q, limit);
-    let db = state.db.lock().unwrap();
-    let results = db.find_by_name(&params.q, limit).map_err(|e| {
+    let results = state.db.find_by_name(&params.q, limit).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
@@ -174,7 +172,6 @@ async fn code(
     state: State<Arc<AppState>>,
     Query(params): Query<CodeParams>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
-    let db = state.db.lock().unwrap();
     if let Some(q) = &params.q {
         let code = q.trim();
         if code.is_empty() {
@@ -186,7 +183,7 @@ async fn code(
             ));
         }
         info!("code: exact lookup for {}", code);
-        let result = db.find_by_code(code).map_err(|e| {
+        let result = state.db.find_by_code(code).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
@@ -212,14 +209,17 @@ async fn code(
             "code: prefix lookup for {} (limit={}, offset={})",
             prefix, limit, offset
         );
-        let result = db.find_by_code_prefix(prefix, limit, offset).map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("{e}"),
-                }),
-            )
-        })?;
+        let result = state
+            .db
+            .find_by_code_prefix(prefix, limit, offset)
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("{e}"),
+                    }),
+                )
+            })?;
         return Ok(Json(
             serde_json::to_value(CodePrefixResponse {
                 results: result.villages,
@@ -250,8 +250,7 @@ async fn locate_handler(
         ));
     }
     info!("locate: lat={}, lon={}", params.lat, params.lon);
-    let db = state.db.lock().unwrap();
-    let result = db.locate(params.lat, params.lon).map_err(|e| {
+    let result = state.db.locate(params.lat, params.lon).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {

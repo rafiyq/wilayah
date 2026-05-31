@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use serde::Serialize;
 use worker::*;
 use wilayah::{haversine_km, location_from_village, Location, Village};
@@ -63,15 +64,30 @@ struct LocateResponse {
 }
 
 #[derive(Serialize)]
+struct UpdateResponse {
+    upserted: usize,
+}
+
+#[derive(Serialize)]
 struct ErrorResponse {
     error: String,
+}
+
+#[derive(serde::Deserialize)]
+struct UpdatePayload {
+    villages: Vec<VillageRow>,
+}
+
+#[derive(serde::Deserialize)]
+struct MetaUpdatePayload {
+    meta: BTreeMap<String, String>,
 }
 
 fn with_cors(response: Result<Response>) -> Result<Response> {
     response.map(|r| {
         let h = Headers::new();
         h.set("Access-Control-Allow-Origin", "*").unwrap();
-        h.set("Access-Control-Allow-Methods", "GET").unwrap();
+        h.set("Access-Control-Allow-Methods", "GET, PUT, OPTIONS").unwrap();
         h.set("Access-Control-Allow-Headers", "*").unwrap();
         r.with_headers(h)
     })
@@ -83,6 +99,16 @@ fn error_response(msg: &str, status: u16) -> Result<Response> {
     })
     .map_err(|e| Error::from(format!("serialize error: {e}")))?;
     with_cors(Response::error(&body, status))
+}
+
+fn check_auth(req: &Request, env: &Env) -> Result<()> {
+    let token = env.secret("ADMIN_TOKEN")?.to_string();
+    let auth = req.headers().get("Authorization")?.unwrap_or_default();
+    if auth == format!("Bearer {token}") {
+        Ok(())
+    } else {
+        Err(Error::from("Unauthorized"))
+    }
 }
 
 fn query_param(url: &Url, key: &str) -> Option<String> {
@@ -296,7 +322,86 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                     }
                 }
             }
-            with_cors(Response::from_json(&LocateResponse { result: None }))
+        with_cors(Response::from_json(&LocateResponse { result: None }))
+    })
+        .put_async("/update", |mut req, ctx| async move {
+            if let Err(_) = check_auth(&req, &ctx.env) {
+                return error_response("Unauthorized", 401);
+            }
+            let payload: UpdatePayload = match req.json().await {
+                Ok(p) => p,
+                Err(_) => return error_response("Invalid JSON body", 400),
+            };
+            if payload.villages.is_empty() {
+                return error_response("No villages provided", 400);
+            }
+            if payload.villages.len() > 500 {
+                return error_response("Max 500 villages per request", 400);
+            }
+
+            let d1 = ctx.env.d1("DB")?;
+            let stmt = d1.prepare(
+                "INSERT OR REPLACE INTO locations (kode, nama, kecamatan, kota, provinsi, lat, lon) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            );
+
+            let rows: Vec<Vec<D1Type>> = payload.villages.iter().map(|v| {
+                vec![
+                    D1Type::Text(&v.kode),
+                    D1Type::Text(&v.nama),
+                    D1Type::Text(&v.kecamatan),
+                    D1Type::Text(&v.kota),
+                    D1Type::Text(&v.provinsi),
+                    D1Type::Real(v.lat),
+                    D1Type::Real(v.lon),
+                ]
+            }).collect();
+
+            let row_refs: Vec<Vec<&D1Type>> = rows.iter().map(|r| r.iter().collect()).collect();
+            let stmts = stmt.batch_bind(row_refs)?;
+            let chunked: Vec<Vec<D1PreparedStatement>> = stmts.chunks(100).map(|c| c.to_vec()).collect();
+            for chunk in chunked {
+                d1.batch(chunk).await?;
+            }
+
+            with_cors(Response::from_json(&UpdateResponse { upserted: payload.villages.len() }))
+        })
+        .put_async("/update/meta", |mut req, ctx| async move {
+            if let Err(_) = check_auth(&req, &ctx.env) {
+                return error_response("Unauthorized", 401);
+            }
+            let payload: MetaUpdatePayload = match req.json().await {
+                Ok(p) => p,
+                Err(_) => return error_response("Invalid JSON body", 400),
+            };
+            if payload.meta.is_empty() {
+                return error_response("No metadata provided", 400);
+            }
+
+            let d1 = ctx.env.d1("DB")?;
+            let stmt = d1.prepare(
+                "INSERT OR REPLACE INTO db_meta (key, value) VALUES (?1, ?2)",
+            );
+
+            let rows: Vec<Vec<D1Type>> = payload.meta.iter().map(|(k, v)| {
+                vec![D1Type::Text(k), D1Type::Text(v)]
+            }).collect();
+
+            let row_refs: Vec<Vec<&D1Type>> = rows.iter().map(|r| r.iter().collect()).collect();
+            let stmts = stmt.batch_bind(row_refs)?;
+            let chunked: Vec<Vec<D1PreparedStatement>> = stmts.chunks(100).map(|c| c.to_vec()).collect();
+            for chunk in chunked {
+                d1.batch(chunk).await?;
+            }
+
+            with_cors(Response::from_json(&UpdateResponse { upserted: payload.meta.len() }))
+        })
+        .options_async("/*catchall", |_req, _ctx| async move {
+            let h = Headers::new();
+            h.set("Access-Control-Allow-Origin", "*").unwrap();
+            h.set("Access-Control-Allow-Methods", "GET, PUT, OPTIONS").unwrap();
+            h.set("Access-Control-Allow-Headers", "*").unwrap();
+            Ok(Response::empty()?.with_headers(h))
         })
         .run(req, env)
         .await

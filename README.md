@@ -18,26 +18,35 @@ BIG (Badan Informasi Geospasial) polygon boundaries.
 ## Quick start (library)
 
 ```rust
-use wilayah;
+use wilayah::Database;
 
-let conn = wilayah::open()?;
+let db = Database::open()?;
 
 // Find nearest villages by GPS
-let nearest = wilayah::find_nearest(&conn, -6.1647, 106.8453, 5)?;
+let nearest = db.find_nearest(-6.1647, 106.8453, 5)?;
 
 // Search by name (FTS5, BM25 ranked)
-let results = wilayah::find_by_name(&conn, "kemayoran", 10)?;
+let results = db.find_by_name("kemayoran", 10)?;
 
 // Unambiguous lookup — returns Found, Ambiguous, or NotFound
-let unique = wilayah::find_by_name_unique(&conn, "gambir")?;
-println!("{unique}"); // "Gambir — Gambir, Kota Administrasi Jakarta Pusat, ... (31.71.05.1001)"
+use wilayah::LookupResult;
+match db.find_by_name_unique("gambir")? {
+    LookupResult::Found(v) => println!("{}", v.name),
+    LookupResult::Ambiguous(list) => println!("{} matches", list.len()),
+    LookupResult::NotFound => println!("not found"),
+}
 
 // Direct lookup by administrative code
-let v = wilayah::find_by_code(&conn, "31.71.03.1001")?;
+let v = db.find_by_code("31.71.03.1001")?;
 
 // List all villages in a kecamatan, kabupaten, or province (paginated)
-let result = wilayah::find_by_code_prefix(&conn, "31.71.03", 100, 0)?;
+let result = db.find_by_code_prefix("31.71.03", 100, 0)?;
 println!("{} of {} villages", result.villages.len(), result.total);
+
+// Reverse-geocode to administrative hierarchy
+if let Some(loc) = db.locate(-6.1647, 106.8453)? {
+    println!("{} > {} > {} > {}", loc.province, loc.city, loc.district, loc.village);
+}
 ```
 
 ## Quick start (HTTP server)
@@ -49,6 +58,7 @@ curl "http://localhost:3000/nearest?lat=-6.1647&lon=106.8453"
 curl "http://localhost:3000/search?q=Kemayoran"
 curl "http://localhost:3000/code?q=31.71.03.1001"
 curl "http://localhost:3000/code?prefix=31.71.03"
+curl "http://localhost:3000/locate?lat=-6.1647&lon=106.8453"
 ```
 
 Alternatively, build and run the binary directly:
@@ -90,6 +100,15 @@ Server info and village count.
 
 Provide either `q` or `prefix`. Exact lookup returns `{"result": {...}}` (or `null`),
 prefix returns `{"results": [...], "total": N, "has_more": bool}`.
+
+### `GET /locate`
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `lat` | f64 | required | Latitude (-90..90) |
+| `lon` | f64 | required | Longitude (-180..180) |
+
+Reverse-geocode to full administrative hierarchy. Returns `{"result": {...}}` (or `null`).
 
 ## Data
 
@@ -147,12 +166,12 @@ previous pipeline run), it copies that instead.
 
 ### Components
 
-- **Library** `src/lib.rs`: public API (`open`, `find_nearest`, `find_by_name`, etc.)
+- **Library** `src/lib.rs`: public API (`Database`, `find_nearest`, `find_by_name`, etc.)
 - **Database layer** `src/db.rs`: SQLite access (RTree, FTS5)
 - **Builder** `src/builder.rs`: full data build process (PDF → BIG → DB)
 - **Build script** `build.rs`: download shim (copies or downloads pre-built DB)
 - **Examples**:
-  - `serve` — axum HTTP API server (default)
+  - `serve` — axum HTTP API server (default, `Database` is `Send + Sync`)
   - `build_db` — CLI wrapper for `Pipeline` (requires `build-db` feature)
   - `verify_legacy` — compare official DB with legacy snapshot (no feature needed)
 
@@ -190,7 +209,7 @@ generated automatically on first official pipeline run and saved to
 
 ## Disambiguation
 
-`find_by_name_unique()` returns a [`LookupResult`](https://docs.rs/wilayah/latest/wilayah/enum.LookupResult.html) with `Display` support for CLI-friendly output:
+`Database::find_by_name_unique()` returns a [`LookupResult`](https://docs.rs/wilayah/latest/wilayah/enum.LookupResult.html) with `Display` support for CLI-friendly output:
 
 | Result | `println!("{result}")` output |
 |--------|-------------------------------|

@@ -89,6 +89,19 @@ fi
 
 rm -f "$TEMP_FILE"
 
+echo "Exporting db_meta from $DB_PATH..."
+META_SQL=$(sqlite3 "$DB_PATH" -cmd ".mode insert db_meta" "SELECT key, value FROM db_meta;" 2>/dev/null || true)
+
+if [ -n "$META_SQL" ]; then
+    META_ROW_COUNT=$(echo "$META_SQL" | grep -c "^INSERT" || true)
+    echo "Exported $META_ROW_COUNT meta rows"
+    echo "Importing metadata into D1..."
+    echo "$META_SQL" | wrangler d1 execute "$DB_NAME" --remote --file=-
+else
+    echo "No db_meta table found in source database, skipping metadata import"
+fi
+
 echo ""
 echo "Import complete! Verify with:"
 echo "  wrangler d1 execute $DB_NAME --remote --command='SELECT COUNT(*) FROM locations'"
+echo "  wrangler d1 execute $DB_NAME --remote --command='SELECT * FROM db_meta'"

@@ -1,5 +1,7 @@
 use rusqlite::{functions::FunctionFlags, Connection};
-use std::sync::OnceLock;
+#[cfg(feature = "raw-sqlite")]
+use std::sync::MutexGuard;
+use std::sync::{Mutex, OnceLock};
 
 use crate::types::{
     haversine_km, location_from_village, DataInfo, Location, LookupResult, PrefixResult, Village,
@@ -35,6 +37,12 @@ impl From<rusqlite::Error> for Error {
     }
 }
 
+impl serde::Serialize for Error {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        s.serialize_str(&self.to_string())
+    }
+}
+
 /// Result type for database operations.
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -46,8 +54,9 @@ pub type Result<T> = std::result::Result<T, Error>;
 ///
 /// # Thread safety
 ///
-/// `Database` is `Send` but not `Sync`, matching the underlying SQLite
-/// connection. To share across threads, wrap in `std::sync::Mutex<Database>`.
+/// `Database` is `Send + Sync`. The internal `rusqlite::Connection` is wrapped
+/// in a `Mutex`, allowing safe shared access across threads (e.g., via
+/// `Arc<Database>` in async servers).
 ///
 /// # Example
 ///
@@ -57,7 +66,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// # Ok::<_, wilayah::Error>(())
 /// ```
 pub struct Database {
-    conn: Connection,
+    conn: Mutex<Connection>,
 }
 
 impl Database {
@@ -92,7 +101,9 @@ impl Database {
             },
         )?;
 
-        Ok(Database { conn })
+        Ok(Database {
+            conn: Mutex::new(conn),
+        })
     }
 
     /// Find the nearest villages to a given latitude/longitude.
@@ -119,7 +130,7 @@ impl Database {
     /// # Ok::<_, wilayah::Error>(())
     /// ```
     pub fn find_nearest(&self, lat: f64, lon: f64, limit: usize) -> Result<Vec<Village>> {
-        nearest(&self.conn, lat, lon, limit)
+        nearest(&self.conn.lock().unwrap(), lat, lon, limit)
     }
 
     /// Search for villages by name.
@@ -147,7 +158,7 @@ impl Database {
     /// # Ok::<_, wilayah::Error>(())
     /// ```
     pub fn find_by_name(&self, query: &str, limit: usize) -> Result<Vec<Village>> {
-        search(&self.conn, query, limit)
+        search(&self.conn.lock().unwrap(), query, limit)
     }
 
     /// Search for a unique village by name.
@@ -171,7 +182,7 @@ impl Database {
     /// # Ok::<_, wilayah::Error>(())
     /// ```
     pub fn find_by_name_unique(&self, query: &str) -> Result<LookupResult> {
-        search_unique(&self.conn, query)
+        search_unique(&self.conn.lock().unwrap(), query)
     }
 
     /// Find a village by its BMKG-compatible administrative code.
@@ -187,7 +198,7 @@ impl Database {
     /// # Ok::<_, wilayah::Error>(())
     /// ```
     pub fn find_by_code(&self, code: &str) -> Result<Option<Village>> {
-        by_code(&self.conn, code)
+        by_code(&self.conn.lock().unwrap(), code)
     }
 
     /// Find all villages matching an administrative code prefix with pagination.
@@ -216,7 +227,7 @@ impl Database {
         limit: usize,
         offset: usize,
     ) -> Result<PrefixResult> {
-        by_code_prefix(&self.conn, prefix, limit, offset)
+        by_code_prefix(&self.conn.lock().unwrap(), prefix, limit, offset)
     }
 
     /// Reverse-geocode a lat/lon to the full administrative hierarchy.
@@ -241,7 +252,7 @@ impl Database {
     /// # Ok::<_, wilayah::Error>(())
     /// ```
     pub fn locate(&self, lat: f64, lon: f64) -> Result<Option<Location>> {
-        locate(&self.conn, lat, lon)
+        locate(&self.conn.lock().unwrap(), lat, lon)
     }
 
     /// Get metadata about the embedded location database.
@@ -250,7 +261,7 @@ impl Database {
     /// village count. Returns default values if the table is missing
     /// or keys are absent.
     pub fn data_info(&self) -> DataInfo {
-        data_info_from_conn(&self.conn)
+        data_info_from_conn(&self.conn.lock().unwrap())
     }
 
     /// Get the total number of villages in the database.
@@ -264,9 +275,11 @@ impl Database {
     /// # Ok::<_, wilayah::Error>(())
     /// ```
     pub fn village_count(&self) -> Result<u32> {
-        let count: i64 = self
-            .conn
-            .query_row("SELECT COUNT(*) FROM locations", [], |row| row.get(0))?;
+        let count: i64 =
+            self.conn
+                .lock()
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM locations", [], |row| row.get(0))?;
         Ok(count as u32)
     }
 }
@@ -281,11 +294,14 @@ impl Database {
 /// Only available with the `raw-sqlite` feature flag.
 #[cfg(feature = "raw-sqlite")]
 impl Database {
-    /// Get a reference to the underlying `rusqlite::Connection`.
+    /// Acquire the internal `MutexGuard` holding the `rusqlite::Connection`.
+    ///
+    /// The returned guard derefs to `&Connection`, and the lock is held for
+    /// the guard's lifetime, preventing concurrent access.
     ///
     /// See the [feature flag documentation](#feature-flags) for caveats.
-    pub fn conn(&self) -> &Connection {
-        &self.conn
+    pub fn conn_guard(&self) -> MutexGuard<'_, Connection> {
+        self.conn.lock().unwrap()
     }
 }
 
