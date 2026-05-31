@@ -35,6 +35,6 @@ jobs:
           key: ${{ runner.os }}-db-${{ hashFiles('src/builder.rs', 'src/db.rs', 'Cargo.toml') }}
 
     - run: cargo fmt --check --all
-    - run: cargo clippy -- -D warnings
+    - run: cargo clippy --features raw-sqlite -- -D warnings
     - run: cargo test --features raw-sqlite
     - run: cargo check --example build_db --features build-db
