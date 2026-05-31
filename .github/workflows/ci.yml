@@ -13,13 +13,13 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           components: clippy, rustfmt
 
       - name: Restore cargo cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -29,12 +29,12 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Restore pre-built database cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: data/locations.db
           key: ${{ runner.os }}-db-${{ hashFiles('src/builder.rs', 'src/db.rs', 'Cargo.toml') }}
 
-    - run: cargo fmt --check --all
-    - run: cargo clippy --features raw-sqlite -- -D warnings
-    - run: cargo test --features raw-sqlite
-    - run: cargo check --example build_db --features build-db
+      - run: cargo fmt --check --all
+      - run: cargo clippy --features raw-sqlite -- -D warnings
+      - run: cargo test --features raw-sqlite
+      - run: cargo check --example build_db --features build-db
