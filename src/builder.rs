@@ -39,6 +39,27 @@ const BIG_BATCH_SIZE: usize = 1000;
 
 type VillageTuple = (String, String, String, String, String, f64, f64);
 
+/// How to classify multi-ring polygon features.
+///
+/// BIG ArcGIS data can return features with multiple rings. Some rings are
+/// separate outer boundaries (e.g., an island village spanning multiple
+/// islands), while rare rings are holes (enclaves).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RingClassification {
+    /// Treat all rings as separate outer polygons (MultiPolygon).
+    ///
+    /// A point in an enclave would match both the surrounding village and
+    /// the enclave village. This is correct for 99%+ of Indonesian village
+    /// boundaries where holes are essentially nonexistent.
+    SeparateRings,
+    /// Use spatial containment to detect holes.
+    ///
+    /// Rings contained within an outer ring become interior rings (holes).
+    /// A point inside a hole will NOT match the outer village. This is fully
+    /// correct but adds ~50 lines of classification logic at build time.
+    ClassifyHoles,
+}
+
 /// Error type returned when a pipeline step fails.
 ///
 /// Contains a descriptive error message indicating what went wrong during
@@ -60,6 +81,8 @@ impl std::error::Error for PipelineError {}
 pub struct PipelineOutput {
     /// Path to the built SQLite database file.
     pub db_path: PathBuf,
+    /// Path to the built polygon database file, if `include_polygons(true)` was set.
+    pub poly_db_path: Option<PathBuf>,
     /// Number of villages in the database.
     pub village_count: usize,
     /// SHA-256 hash of the database file, in hexadecimal.
@@ -79,6 +102,8 @@ pub struct Pipeline {
     output: PathBuf,
     decree: String,
     force_refresh_big: bool,
+    ring_classification: RingClassification,
+    include_polygons: bool,
 }
 
 #[allow(dead_code)]
@@ -103,6 +128,8 @@ impl Pipeline {
             output: PathBuf::from("data/locations.db"),
             decree: DATA_DECREE.to_string(),
             force_refresh_big: false,
+            ring_classification: RingClassification::SeparateRings,
+            include_polygons: false,
         }
     }
 
@@ -160,6 +187,27 @@ impl Pipeline {
         self
     }
 
+    /// Sets how multi-ring polygon features are classified.
+    ///
+    /// Defaults to [`RingClassification::SeparateRings`] — all rings are treated
+    /// as separate outer polygons. Use [`RingClassification::ClassifyHoles`] to
+    /// detect holes (enclaves) via spatial containment tests.
+    pub fn ring_classification(mut self, mode: RingClassification) -> Self {
+        self.ring_classification = mode;
+        self
+    }
+
+    /// Enables building a separate polygon database alongside the main database.
+    ///
+    /// When `true`, the pipeline preserves raw polygon geometry from the BIG API
+    /// and writes it to a `locations-poly.db` file (same directory as the output).
+    /// This enables [`LocateMethod::Contained`](crate::types::LocateMethod::Contained)
+    /// lookups via `Database::open_with_polygons()`.
+    pub fn include_polygons(mut self, yes: bool) -> Self {
+        self.include_polygons = yes;
+        self
+    }
+
     /// Executes the full pipeline.
     ///
     /// Steps:
@@ -178,7 +226,12 @@ impl Pipeline {
         let pdf_path = ensure_pdf(&self.pdf_url, &self.cache_dir)?;
         let text = extract_text(&pdf_path)?;
         let villages = parse_villages(&text);
-        let big_data = fetch_big_data(&self.big_api_url, &self.cache_dir, self.force_refresh_big)?;
+        let big_data = fetch_big_data(
+            &self.big_api_url,
+            &self.cache_dir,
+            self.force_refresh_big,
+            self.include_polygons,
+        )?;
         let merged = merge_villages(&villages, &big_data);
 
         let build_date = std::time::SystemTime::now()
@@ -188,6 +241,14 @@ impl Pipeline {
 
         build_db(&merged, &self.output, &self.decree, "official", build_date)?;
 
+        let poly_db_path = if self.include_polygons {
+            let poly_path = self.output.with_extension("poly.db");
+            build_poly_db(&big_data, &poly_path, self.ring_classification)?;
+            Some(poly_path)
+        } else {
+            None
+        };
+
         let sha256 = compute_sha256(&self.output)?;
 
         let village_count = merged.len();
@@ -195,6 +256,7 @@ impl Pipeline {
         eprintln!("Pipeline completed successfully.");
         Ok(PipelineOutput {
             db_path: self.output,
+            poly_db_path,
             village_count,
             sha256,
         })
@@ -396,12 +458,14 @@ struct BigRecord {
     province: String,
     lat: f64,
     lon: f64,
+    rings: Option<Vec<Vec<[f64; 2]>>>,
 }
 
 fn fetch_big_data(
     api_url: &str,
     cache_dir: &Path,
     force_refresh: bool,
+    include_polygons: bool,
 ) -> Result<Vec<BigRecord>, PipelineError> {
     let cache_path = cache_dir.join("big_villages.json");
 
@@ -417,6 +481,25 @@ fn fetch_big_data(
                 r.get("lat").and_then(|v| v.as_f64()),
                 r.get("lon").and_then(|v| v.as_f64()),
             ) {
+                let rings = if include_polygons {
+                    r.get("rings").and_then(|v| v.as_array()).map(|arr| {
+                        arr.iter()
+                            .filter_map(|ring_val| {
+                                ring_val.as_array().map(|ring| {
+                                    ring.iter()
+                                        .filter_map(|pt| {
+                                            let lon = pt.get(0)?.as_f64()?;
+                                            let lat = pt.get(1)?.as_f64()?;
+                                            Some([lat, lon])
+                                        })
+                                        .collect::<Vec<[f64; 2]>>()
+                                })
+                            })
+                            .collect::<Vec<Vec<[f64; 2]>>>()
+                    })
+                } else {
+                    None
+                };
                 result.push(BigRecord {
                     code: code.to_string(),
                     name: r
@@ -441,6 +524,7 @@ fn fetch_big_data(
                         .to_string(),
                     lat,
                     lon,
+                    rings,
                 });
             }
         }
@@ -516,10 +600,16 @@ fn fetch_big_data(
 
             if let (Some(code), Some(name)) = (code, name) {
                 let geometry = feature.get("geometry");
-                let (lat, lon) = if let Some(geom) = geometry {
-                    compute_centroid(geom)
+                let (lat, lon, rings) = if let Some(geom) = geometry {
+                    let (centroid_lat, centroid_lon) = compute_centroid(geom);
+                    let extracted_rings = if include_polygons {
+                        extract_rings(geom)
+                    } else {
+                        None
+                    };
+                    (centroid_lat, centroid_lon, extracted_rings)
                 } else {
-                    (0.0, 0.0)
+                    (0.0, 0.0, None)
                 };
 
                 all_records.push(BigRecord {
@@ -530,6 +620,7 @@ fn fetch_big_data(
                     province: province.unwrap_or_default(),
                     lat,
                     lon,
+                    rings,
                 });
             }
         }
@@ -551,7 +642,7 @@ fn fetch_big_data(
     let cache_data: Vec<serde_json::Value> = all_records
         .iter()
         .map(|r| {
-            serde_json::json!({
+            let mut obj = serde_json::json!({
                 "code": r.code,
                 "name": r.name,
                 "district": r.district,
@@ -559,7 +650,13 @@ fn fetch_big_data(
                 "province": r.province,
                 "lat": r.lat,
                 "lon": r.lon,
-            })
+            });
+            if include_polygons {
+                if let Some(rings) = &r.rings {
+                    obj["rings"] = serde_json::json!(rings);
+                }
+            }
+            obj
         })
         .collect();
     let cache_json = serde_json::to_string(&cache_data)
@@ -647,6 +744,32 @@ fn compute_centroid(geometry: &serde_json::Value) -> (f64, f64) {
     }
 
     polygon_centroid(largest_ring)
+}
+
+fn extract_rings(geometry: &serde_json::Value) -> Option<Vec<Vec<[f64; 2]>>> {
+    if let Some(rings_array) = geometry.get("rings").and_then(|r| r.as_array()) {
+        let result: Vec<Vec<[f64; 2]>> = rings_array
+            .iter()
+            .filter_map(|ring_val| {
+                ring_val.as_array().map(|ring| {
+                    ring.iter()
+                        .filter_map(|pt| {
+                            let lon = pt.get(0)?.as_f64()?;
+                            let lat = pt.get(1)?.as_f64()?;
+                            Some([lat, lon])
+                        })
+                        .collect::<Vec<[f64; 2]>>()
+                })
+            })
+            .collect();
+        if result.is_empty() {
+            None
+        } else {
+            Some(result)
+        }
+    } else {
+        None
+    }
 }
 
 fn polygon_centroid(ring: &[serde_json::Value]) -> (f64, f64) {
@@ -880,6 +1003,201 @@ fn build_db(
     );
 
     Ok(())
+}
+
+fn build_poly_db(
+    big_data: &[BigRecord],
+    poly_db_path: &Path,
+    ring_classification: RingClassification,
+) -> Result<(), PipelineError> {
+    if poly_db_path.exists() {
+        fs::remove_file(poly_db_path)
+            .map_err(|e| PipelineError(format!("failed to remove existing poly DB: {e}")))?;
+    }
+
+    let mut conn = Connection::open(poly_db_path)
+        .map_err(|e| PipelineError(format!("failed to create poly DB: {e}")))?;
+    conn.execute_batch(
+        "PRAGMA journal_mode = OFF; PRAGMA synchronous = OFF; PRAGMA page_size = 4096;",
+    )
+    .map_err(|e| PipelineError(format!("PRAGMA failed: {e}")))?;
+
+    conn.execute(
+        "CREATE TABLE village_polygons (
+            id INTEGER PRIMARY KEY,
+            village_id INTEGER NOT NULL,
+            ring_idx INTEGER NOT NULL,
+            ring_type TEXT NOT NULL DEFAULT 'exterior',
+            parent_ring_id INTEGER,
+            min_lon REAL NOT NULL,
+            max_lon REAL NOT NULL,
+            min_lat REAL NOT NULL,
+            max_lat REAL NOT NULL,
+            vertices BLOB NOT NULL
+        )",
+        [],
+    )
+    .map_err(|e| PipelineError(format!("failed to create village_polygons table: {e}")))?;
+
+    conn.execute(
+        "CREATE INDEX idx_vp_village ON village_polygons(village_id)",
+        [],
+    )
+    .map_err(|e| PipelineError(format!("failed to create village index: {e}")))?;
+
+    conn.execute(
+        "CREATE INDEX idx_vp_bbox ON village_polygons(min_lon, max_lon, min_lat, max_lat)",
+        [],
+    )
+    .map_err(|e| PipelineError(format!("failed to create bbox index: {e}")))?;
+
+    let tx = conn
+        .transaction()
+        .map_err(|e| PipelineError(format!("failed to begin poly DB transaction: {e}")))?;
+
+    {
+        let mut ins = tx.prepare(
+            "INSERT INTO village_polygons (id, village_id, ring_idx, ring_type, parent_ring_id, min_lon, max_lon, min_lat, max_lat, vertices) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"
+        ).map_err(|e| PipelineError(format!("prepare insert village_polygons: {e}")))?;
+
+        let mut row_id: i64 = 0;
+        for (village_idx, record) in big_data.iter().enumerate() {
+            let rings = match &record.rings {
+                Some(r) => r,
+                None => continue,
+            };
+
+            let classified = match ring_classification {
+                RingClassification::SeparateRings => {
+                    rings.iter().map(|_| "exterior").collect::<Vec<_>>()
+                }
+                RingClassification::ClassifyHoles => classify_rings(rings),
+            };
+
+            for (ring_idx, ring) in rings.iter().enumerate() {
+                if ring.len() < 3 {
+                    continue;
+                }
+
+                let ring_type = classified[ring_idx];
+                let vertices: Vec<(f64, f64)> = ring.iter().map(|&[lat, lon]| (lat, lon)).collect();
+                let blob = crate::types::serialize_vertices(&vertices);
+
+                let mut min_lat = f64::MAX;
+                let mut max_lat = f64::MIN;
+                let mut min_lon = f64::MAX;
+                let mut max_lon = f64::MIN;
+                for &(lat, lon) in &vertices {
+                    min_lat = min_lat.min(lat);
+                    max_lat = max_lat.max(lat);
+                    min_lon = min_lon.min(lon);
+                    max_lon = max_lon.max(lon);
+                }
+
+                row_id += 1;
+                ins.execute(rusqlite::params![
+                    row_id,
+                    village_idx as i64 + 1,
+                    ring_idx as i64,
+                    ring_type,
+                    Option::<i64>::None,
+                    min_lon,
+                    max_lon,
+                    min_lat,
+                    max_lat,
+                    blob,
+                ])
+                .map_err(|e| PipelineError(format!("insert village_polygon: {e}")))?;
+            }
+        }
+    }
+
+    tx.commit()
+        .map_err(|e| PipelineError(format!("failed to commit poly DB transaction: {e}")))?;
+
+    conn.execute_batch("PRAGMA analysis_limit = 400; PRAGMA optimize; VACUUM;")
+        .map_err(|e| PipelineError(format!("poly DB optimize failed: {e}")))?;
+
+    let size = fs::metadata(poly_db_path)
+        .map_err(|e| PipelineError(format!("failed to get poly DB metadata: {e}")))?;
+    eprintln!(
+        "Polygon database written: {:.1} MB",
+        size.len() as f64 / (1024.0 * 1024.0)
+    );
+
+    Ok(())
+}
+
+fn classify_rings(rings: &[Vec<[f64; 2]>]) -> Vec<&'static str> {
+    if rings.len() <= 1 {
+        return vec!["exterior"; rings.len()];
+    }
+
+    let bboxes: Vec<(f64, f64, f64, f64)> = rings
+        .iter()
+        .map(|ring| {
+            let mut min_lat = f64::MAX;
+            let mut max_lat = f64::MIN;
+            let mut min_lon = f64::MAX;
+            let mut max_lon = f64::MIN;
+            for &[lat, lon] in ring {
+                min_lat = min_lat.min(lat);
+                max_lat = max_lat.max(lat);
+                min_lon = min_lon.min(lon);
+                max_lon = max_lon.max(lon);
+            }
+            (min_lat, max_lat, min_lon, max_lon)
+        })
+        .collect();
+
+    let areas: Vec<f64> = rings
+        .iter()
+        .map(|ring| {
+            let n = ring.len();
+            if n < 3 {
+                return 0.0_f64;
+            }
+            let mut area = 0.0_f64;
+            for i in 0..n {
+                let j = (i + 1) % n;
+                let (lat_i, lon_i) = (ring[i][0], ring[i][1]);
+                let (lat_j, lon_j) = (ring[j][0], ring[j][1]);
+                area += lon_i * lat_j - lon_j * lat_i;
+            }
+            area.abs() * 0.5
+        })
+        .collect();
+
+    let mut types = vec!["exterior"; rings.len()];
+
+    for i in 0..rings.len() {
+        if areas[i] < 1e-10 {
+            continue;
+        }
+        let (min_lat_i, max_lat_i, min_lon_i, max_lon_i) = bboxes[i];
+        for j in 0..rings.len() {
+            if i == j || areas[j] <= areas[i] {
+                continue;
+            }
+            let (min_lat_j, max_lat_j, min_lon_j, max_lon_j) = bboxes[j];
+            if min_lat_j <= min_lat_i
+                && max_lat_j >= max_lat_i
+                && min_lon_j <= min_lon_i
+                && max_lon_j >= max_lon_i
+            {
+                let test_pt = (rings[i][0][0], rings[i][0][1]);
+                let exterior: Vec<(f64, f64)> =
+                    rings[j].iter().map(|&[lat, lon]| (lat, lon)).collect();
+                if crate::types::point_in_polygon(test_pt.0, test_pt.1, &exterior, &[]) {
+                    types[i] = "interior";
+                    break;
+                }
+            }
+        }
+    }
+
+    types
 }
 
 fn compute_sha256(db_path: &Path) -> Result<String, PipelineError> {
@@ -1127,6 +1445,7 @@ mod tests {
             province: "Jakarta".to_string(),
             lat: -6.1647,
             lon: 106.8453,
+            rings: None,
         }];
         let merged = merge_villages(&villages, &big_data);
         assert_eq!(merged.len(), 1);
@@ -1151,6 +1470,7 @@ mod tests {
             province: "Jakarta".to_string(),
             lat: -6.1647,
             lon: 106.8453,
+            rings: None,
         }];
         let merged = merge_villages(&villages, &big_data);
         assert_eq!(merged.len(), 1);

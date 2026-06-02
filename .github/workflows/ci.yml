@@ -34,7 +34,11 @@ jobs:
           path: data/locations.db
           key: ${{ runner.os }}-db-${{ hashFiles('src/builder.rs', 'src/db.rs', 'Cargo.toml') }}
 
-      - run: cargo fmt --check --all
-      - run: cargo clippy --features raw-sqlite -- -D warnings
-      - run: cargo test --features raw-sqlite
-      - run: cargo check --example build_db --features build-db
+      - name: Check formatting
+        run: cargo fmt --check --all
+      - name: Run clippy
+        run: cargo clippy --features raw-sqlite -- -D warnings
+      - name: Run tests
+        run: cargo test --features raw-sqlite
+      - name: Check build-db example
+        run: cargo check --example build_db --features build-db

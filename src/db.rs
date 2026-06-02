@@ -4,7 +4,8 @@ use std::sync::MutexGuard;
 use std::sync::{Mutex, OnceLock};
 
 use crate::types::{
-    haversine_km, location_from_village, DataInfo, Location, LookupResult, PrefixResult, Village,
+    deserialize_vertices, haversine_km, location_from_village, point_in_polygon, DataInfo,
+    LocateMethod, Location, LookupResult, PrefixResult, Village,
 };
 
 const DB_BYTES: &[u8] = include_bytes!(env!("LOCATION_DB_PATH"));
@@ -58,6 +59,14 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// in a `Mutex`, allowing safe shared access across threads (e.g., via
 /// `Arc<Database>` in async servers).
 ///
+/// # Polygon containment
+///
+/// By default, `locate()` uses nearest-centroid matching. Call
+/// [`open_with_polygons()`](Database::open_with_polygons) to load a polygon
+/// database built with `Pipeline::include_polygons(true)`. When a polygon DB
+/// is loaded, `locate()` automatically uses polygon containment when available,
+/// falling back to nearest-centroid for villages without polygon data.
+///
 /// # Example
 ///
 /// ```
@@ -67,6 +76,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// ```
 pub struct Database {
     conn: Mutex<Connection>,
+    poly_conn: Option<Mutex<Connection>>,
 }
 
 impl Database {
@@ -103,7 +113,48 @@ impl Database {
 
         Ok(Database {
             conn: Mutex::new(conn),
+            poly_conn: None,
         })
+    }
+
+    /// Open the embedded location database with an additional polygon database.
+    ///
+    /// Loads the main database as [`open()`](Database::open) does, then opens
+    /// the polygon database from `poly_path`. The polygon database should be
+    /// built with `Pipeline::include_polygons(true)` and contains village
+    /// boundary geometry for polygon-containment lookups.
+    ///
+    /// When a polygon database is loaded, [`locate()`](Database::locate) will
+    /// use polygon containment when the query point falls inside a village
+    /// boundary, returning [`LocateMethod::Contained`]. Villages without
+    /// polygon data fall back to nearest-centroid matching.
+    ///
+    /// # Arguments
+    ///
+    /// * `poly_path` - Path to the `locations-poly.db` file
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// let db = wilayah::Database::open_with_polygons("data/locations-poly.db")?;
+    /// if let Some(loc) = db.locate(-6.1647, 106.8453)? {
+    ///     println!("Method: {}", loc.method);
+    /// }
+    /// # Ok::<_, wilayah::Error>(())
+    /// ```
+    pub fn open_with_polygons(poly_path: &str) -> Result<Self> {
+        let mut db = Self::open()?;
+        let poly_conn = Connection::open(poly_path)?;
+        db.poly_conn = Some(Mutex::new(poly_conn));
+        Ok(db)
+    }
+
+    /// Returns `true` if a polygon database has been loaded.
+    ///
+    /// When `true`, [`locate()`](Database::locate) will use polygon containment
+    /// when the query point falls inside a village boundary.
+    pub fn has_polygons(&self) -> bool {
+        self.poly_conn.is_some()
     }
 
     /// Find the nearest villages to a given latitude/longitude.
@@ -252,7 +303,10 @@ impl Database {
     /// # Ok::<_, wilayah::Error>(())
     /// ```
     pub fn locate(&self, lat: f64, lon: f64) -> Result<Option<Location>> {
-        locate(&self.conn.lock().unwrap(), lat, lon)
+        if self.poly_conn.is_some() {
+            return locate_contained(&self.conn.lock().unwrap(), &self.poly_conn, lat, lon);
+        }
+        locate_nearest(&self.conn.lock().unwrap(), lat, lon)
     }
 
     /// Get metadata about the embedded location database.
@@ -529,7 +583,7 @@ fn search_unique(conn: &Connection, query: &str) -> Result<LookupResult> {
     })
 }
 
-fn locate(conn: &Connection, lat: f64, lon: f64) -> Result<Option<Location>> {
+fn locate_nearest(conn: &Connection, lat: f64, lon: f64) -> Result<Option<Location>> {
     let mut results = nearest(conn, lat, lon, 1)?;
     let village = match results.pop() {
         Some(v) => v,
@@ -537,5 +591,102 @@ fn locate(conn: &Connection, lat: f64, lon: f64) -> Result<Option<Location>> {
     };
 
     let dist_km = village.dist_km.unwrap_or(0.0);
-    Ok(location_from_village(&village, dist_km))
+    Ok(location_from_village(
+        &village,
+        dist_km,
+        LocateMethod::Nearest,
+    ))
+}
+
+type VillageRingMap = std::collections::HashMap<i64, Vec<(String, Vec<(f64, f64)>)>>;
+
+fn locate_contained(
+    conn: &Connection,
+    poly_conn: &Option<Mutex<Connection>>,
+    lat: f64,
+    lon: f64,
+) -> Result<Option<Location>> {
+    let poly = poly_conn.as_ref().unwrap().lock().unwrap();
+
+    let sql = "
+        SELECT vp.village_id, vp.ring_type, vp.vertices
+        FROM village_polygons vp
+        WHERE vp.min_lon <= ?2 AND vp.max_lon >= ?1
+          AND vp.min_lat <= ?4 AND vp.max_lat >= ?3
+    ";
+
+    let mut stmt = poly.prepare_cached(sql)?;
+    let rows = stmt.query_map(rusqlite::params![lon, lon, lat, lat], |row| {
+        let village_id: i64 = row.get(0)?;
+        let ring_type: String = row.get(1)?;
+        let vertices_blob: Vec<u8> = row.get(2)?;
+        Ok((village_id, ring_type, vertices_blob))
+    })?;
+
+    let mut village_rings = VillageRingMap::new();
+    for row in rows {
+        let (village_id, ring_type, blob) = row?;
+        let vertices = deserialize_vertices(&blob);
+        village_rings
+            .entry(village_id)
+            .or_default()
+            .push((ring_type, vertices));
+    }
+
+    drop(stmt);
+    drop(poly);
+
+    for (village_id, rings) in &village_rings {
+        let exteriors: Vec<&[(f64, f64)]> = rings
+            .iter()
+            .filter(|(rt, _)| rt == "exterior")
+            .map(|(_, v)| v.as_slice())
+            .collect();
+        let interiors: Vec<&[(f64, f64)]> = rings
+            .iter()
+            .filter(|(rt, _)| rt == "interior")
+            .map(|(_, v)| v.as_slice())
+            .collect();
+
+        for exterior in &exteriors {
+            if point_in_polygon(lat, lon, exterior, &interiors) {
+                let village = by_id(conn, *village_id)?;
+                let Some(village) = village else {
+                    continue;
+                };
+                let dist_km = haversine_km(lat, lon, village.lat, village.lon);
+                return Ok(location_from_village(
+                    &village,
+                    dist_km,
+                    LocateMethod::Contained,
+                ));
+            }
+        }
+    }
+
+    locate_nearest(conn, lat, lon)
+}
+
+fn by_id(conn: &Connection, id: i64) -> Result<Option<Village>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT kode, nama, kecamatan, kota, provinsi, lat, lon
+         FROM locations WHERE id = ?1",
+    )?;
+    let mut rows = stmt.query_map(rusqlite::params![id], |row| {
+        Ok(Village {
+            code: row.get(0)?,
+            name: row.get(1)?,
+            district: row.get(2)?,
+            city: row.get(3)?,
+            province: row.get(4)?,
+            lat: row.get(5)?,
+            lon: row.get(6)?,
+            dist_km: None,
+        })
+    })?;
+    match rows.next() {
+        Some(Ok(v)) => Ok(Some(v)),
+        Some(Err(e)) => Err(Error::from(e)),
+        None => Ok(None),
+    }
 }

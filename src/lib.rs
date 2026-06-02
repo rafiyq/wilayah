@@ -63,9 +63,13 @@ mod db;
 pub mod builder;
 
 pub use types::{
-    haversine_km, location_from_village, AdminLevel, DataInfo, LocateMethod, Location,
-    LookupResult, PrefixResult, Village,
+    deserialize_vertices, haversine_km, location_from_village, point_in_polygon, point_in_ring,
+    serialize_vertices, AdminLevel, DataInfo, LocateMethod, Location, LookupResult, PipResult,
+    PrefixResult, Village,
 };
+
+#[cfg(feature = "build-db")]
+pub use builder::RingClassification;
 
 #[cfg(feature = "db")]
 pub use db::{Database, Error};
@@ -340,7 +344,8 @@ mod tests {
             lon: 106.8453,
             dist_km: None,
         };
-        let loc = location_from_village(&v, 1.5).expect("should parse valid code");
+        let loc =
+            location_from_village(&v, 1.5, LocateMethod::Nearest).expect("should parse valid code");
         assert_eq!(loc.province.code, "31");
         assert_eq!(loc.city.code, "31.71");
         assert_eq!(loc.district.code, "31.71.03");
@@ -361,7 +366,7 @@ mod tests {
             lon: 0.0,
             dist_km: None,
         };
-        assert!(location_from_village(&v, 0.0).is_none());
+        assert!(location_from_village(&v, 0.0, LocateMethod::Nearest).is_none());
     }
 
     #[test]
