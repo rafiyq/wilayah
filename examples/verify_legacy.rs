@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use wilayah::haversine_km;
 
 fn main() {
     let snapshot_path = Path::new("data/cache/legacy_snapshot.json");
@@ -221,16 +222,6 @@ struct VerificationReport {
     hierarchy_diffs: Vec<(String, String, String, String, String, String, String)>,
 }
 
-fn haversine_distance(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
-    const EARTH_RADIUS_M: f64 = 6_371_000.0;
-    let to_rad = |d: f64| d * std::f64::consts::PI / 180.0;
-    let dlat = to_rad(lat2 - lat1);
-    let dlon = to_rad(lon2 - lon1);
-    let a = (dlat / 2.0).sin().powi(2)
-        + to_rad(lat1).cos() * to_rad(lat2).cos() * (dlon / 2.0).sin().powi(2);
-    2.0 * EARTH_RADIUS_M * a.sqrt().atan2((1.0 - a).sqrt())
-}
-
 fn compare_data(
     official_map: &HashMap<String, OfficialVillage>,
     mut legacy_map: HashMap<String, LegacyVillage>,
@@ -247,7 +238,7 @@ fn compare_data(
             if official.name != legacy.name {
                 name_diffs.push((code.clone(), official.name.clone(), legacy.name.clone()));
             }
-            let drift = haversine_distance(official.lat, official.lon, legacy.lat, legacy.lon);
+            let drift = haversine_km(official.lat, official.lon, legacy.lat, legacy.lon) * 1000.0;
             if drift > 1000.0 {
                 coord_drifts.push((code.clone(), drift));
             }

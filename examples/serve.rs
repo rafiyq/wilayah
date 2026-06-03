@@ -13,6 +13,35 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 use wilayah::{Database, Village};
 
+fn validate_coords(lat: f64, lon: f64) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    if lat < -90.0 || lat > 90.0 || lon < -180.0 || lon > 180.0 {
+        Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Invalid coordinates".into(),
+            }),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn internal_error(e: wilayah::Error) -> (StatusCode, Json<ErrorResponse>) {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(ErrorResponse {
+            error: format!("{e}"),
+        }),
+    )
+}
+
+fn bad_request(msg: &str) -> (StatusCode, Json<ErrorResponse>) {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(ErrorResponse { error: msg.into() }),
+    )
+}
+
 struct AppState {
     db: Database,
 }
@@ -125,30 +154,15 @@ async fn nearest(
     state: State<Arc<AppState>>,
     Query(params): Query<NearestParams>,
 ) -> Result<Json<Vec<Village>>, (StatusCode, Json<ErrorResponse>)> {
-    if params.lat < -90.0 || params.lat > 90.0 || params.lon < -180.0 || params.lon > 180.0 {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "Invalid coordinates".into(),
-            }),
-        ));
-    }
-    let limit = params.limit.clamp(1, 20);
+    validate_coords(params.lat, params.lon)?;
     info!(
         "nearest: lat={}, lon={}, limit={}",
-        params.lat, params.lon, limit
+        params.lat, params.lon, params.limit
     );
     let results = state
         .db
-        .find_nearest(params.lat, params.lon, limit)
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("{e}"),
-                }),
-            )
-        })?;
+        .find_nearest(params.lat, params.lon, params.limit)
+        .map_err(internal_error)?;
     Ok(Json(results))
 }
 
@@ -157,23 +171,13 @@ async fn search(
     Query(params): Query<SearchParams>,
 ) -> Result<Json<SearchResponse>, (StatusCode, Json<ErrorResponse>)> {
     if params.q.trim().is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "Query parameter 'q' is required".into(),
-            }),
-        ));
+        return Err(bad_request("Query parameter 'q' is required"));
     }
-    let limit = params.limit.clamp(1, 100);
-    info!("search: q={}, limit={}", params.q, limit);
-    let results = state.db.find_by_name(&params.q, limit).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("{e}"),
-            }),
-        )
-    })?;
+    info!("search: q={}, limit={}", params.q, params.limit);
+    let results = state
+        .db
+        .find_by_name(&params.q, params.limit)
+        .map_err(internal_error)?;
     Ok(Json(SearchResponse { results }))
 }
 
@@ -184,51 +188,26 @@ async fn code(
     if let Some(q) = &params.q {
         let code = q.trim();
         if code.is_empty() {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: "Parameter 'q' must not be empty".into(),
-                }),
-            ));
+            return Err(bad_request("Parameter 'q' must not be empty"));
         }
         info!("code: exact lookup for {}", code);
-        let result = state.db.find_by_code(code).map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("{e}"),
-                }),
-            )
-        })?;
+        let result = state.db.find_by_code(code).map_err(internal_error)?;
         return Ok(Json(serde_json::to_value(CodeResponse { result }).unwrap()));
     }
     if let Some(prefix) = &params.prefix {
         let prefix = prefix.trim();
         if prefix.is_empty() {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: "Parameter 'prefix' must not be empty".into(),
-                }),
-            ));
+            return Err(bad_request("Parameter 'prefix' must not be empty"));
         }
-        let limit = params.limit.clamp(1, 1000);
         let offset = params.offset;
         info!(
             "code: prefix lookup for {} (limit={}, offset={})",
-            prefix, limit, offset
+            prefix, params.limit, offset
         );
         let result = state
             .db
-            .find_by_code_prefix(prefix, limit, offset)
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse {
-                        error: format!("{e}"),
-                    }),
-                )
-            })?;
+            .find_by_code_prefix(prefix, params.limit, offset)
+            .map_err(internal_error)?;
         return Ok(Json(
             serde_json::to_value(CodePrefixResponse {
                 results: result.villages,
@@ -238,11 +217,8 @@ async fn code(
             .unwrap(),
         ));
     }
-    Err((
-        StatusCode::BAD_REQUEST,
-        Json(ErrorResponse {
-            error: "Provide either 'q' (exact code) or 'prefix' (code prefix)".into(),
-        }),
+    Err(bad_request(
+        "Provide either 'q' (exact code) or 'prefix' (code prefix)",
     ))
 }
 
@@ -250,23 +226,12 @@ async fn locate_handler(
     state: State<Arc<AppState>>,
     Query(params): Query<LocateParams>,
 ) -> Result<Json<LocateResponse>, (StatusCode, Json<ErrorResponse>)> {
-    if params.lat < -90.0 || params.lat > 90.0 || params.lon < -180.0 || params.lon > 180.0 {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "Invalid coordinates".into(),
-            }),
-        ));
-    }
+    validate_coords(params.lat, params.lon)?;
     info!("locate: lat={}, lon={}", params.lat, params.lon);
-    let result = state.db.locate(params.lat, params.lon).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("{e}"),
-            }),
-        )
-    })?;
+    let result = state
+        .db
+        .locate(params.lat, params.lon)
+        .map_err(internal_error)?;
     Ok(Json(LocateResponse { result }))
 }
 

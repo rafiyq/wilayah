@@ -37,7 +37,6 @@ regex = "1"
 [features]
 default = ["db"]
 db = ["dep:rusqlite"]
-types = []
 build-db = ["db", "ureq", "regex", "serde_json", "sha2"]
 raw-sqlite = ["db"]
 
