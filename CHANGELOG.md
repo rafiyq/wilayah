@@ -15,6 +15,21 @@ All notable changes to this project will be documented in this file.
 - `Serialize` impl on `Error` (serializes as string)
 - `Database` is now `Send + Sync` — internal `Connection` wrapped in `Mutex`
 - `Database::conn_guard()` — safe accessor for the underlying `MutexGuard<Connection>` (`raw-sqlite` feature)
+- `PipResult` enum — result of a point-in-polygon test (`Inside`, `Outside`, `OnBoundary`)
+- `point_in_ring()` — ray-casting point-in-polygon for a single ring with on-boundary detection
+- `point_in_polygon()` — point-in-polygon with optional interior rings (holes)
+- `serialize_vertices()` / `deserialize_vertices()` — compact binary BLOB format for polygon vertices (16 bytes/point, little-endian f64 pairs)
+- `RingClassification` enum — `SeparateRings` (default, treats all rings as exterior) and `ClassifyHoles` (spatial containment-based hole detection)
+- `Database::open_with_polygons()` — opens main DB + separate polygon DB for containment-based `locate()`
+- `Database::has_polygons()` — returns whether a polygon database is loaded
+- `Pipeline::include_polygons()` — builder method to enable polygon database output
+- `Pipeline::ring_classification()` — builder method to set ring classification mode
+- `build_poly_db()` — builds `locations-poly.db` with village boundary geometry, bounding box indexes, and compact BLOB vertex storage
+- `classify_rings()` — classifies multi-ring features into exterior/interior via bounding box pre-filter + PIP
+- `extract_rings()` — extracts `[lat, lon]` ring arrays from BIG ArcGIS API geometry JSON
+- `LocateMethod::Contained` is now functional — `locate()` returns it when the query point falls inside a village boundary polygon
+- Re-exports: `PipResult`, `point_in_ring`, `point_in_polygon`, `serialize_vertices`, `deserialize_vertices`, `RingClassification`
+- `serve.rs` example now accepts `--poly <path>` flag to load a polygon database
 - Cloudflare Worker example with D1 backend (`examples/cloudflare-worker/`)
 - `deploy-worker.yml` GitHub Actions workflow for Worker deployment
 - `.gitignore` for cloudflare-worker directory and `.dev.vars`
@@ -29,10 +44,17 @@ All notable changes to this project will be documented in this file.
 - **BREAKING**: `open()` renamed to `Database::open()` and returns `Result<Database>` instead of `rusqlite::Result<Connection>`
 - **BREAKING**: `village_count()` now returns `Result<u32>` instead of `Result<i64>` (consistent with `DataInfo.village_count`)
 - **BREAKING**: `Database::conn()` replaced by `Database::conn_guard()` which returns `MutexGuard<Connection>` (derefs to `&Connection`)
+- **BREAKING**: `location_from_village()` now takes `method: LocateMethod` as third parameter (was hardcoded `Nearest`)
+- `Pipeline::run()` returns `PipelineOutput` with new `poly_db_path: Option<PathBuf>` field
+- `Pipeline::fetch_big_data()` signature updated to accept `include_polygons: bool`; preserves ring geometry in cache when enabled
+- `LocateMethod::Contained` is now functional (was previously a placeholder variant)
+- `Database::locate()` dispatches to polygon containment when a polygon DB is loaded, with automatic fallback to nearest-centroid
 - `data_info()` free function now internally uses `Database::open()` instead of `Connection::open_in_memory()` directly
 - `Database::data_info()` method added as the preferred way to get metadata
 - axum `serve.rs` example simplified: `Arc<Mutex<Database>>` → `Arc<Database>` (no more lock contention)
-- CI workflow now runs `cargo fmt --check --all` and `cargo test --features raw-sqlite`
+- CI workflow updated to Node 24-compatible action versions (`actions/checkout@v6`, `actions/cache@v5`)
+- CI `clippy` now uses `--features raw-sqlite`
+- CI `- run:` steps fixed to proper YAML indentation (were at 4 spaces instead of 6)
 - Integration tests gated behind `raw-sqlite` feature (they use `Database::conn_guard()`)
 
 ### Removed

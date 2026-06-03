@@ -18,10 +18,19 @@ struct AppState {
 }
 
 impl AppState {
-    fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        let db = Database::open()?;
+    fn new(poly_path: Option<&str>) -> Result<Self, Box<dyn std::error::Error>> {
+        let db = if let Some(path) = poly_path {
+            Database::open_with_polygons(path)?
+        } else {
+            Database::open()?
+        };
         let count = db.village_count()?;
-        info!("Database loaded: {count} villages");
+        let poly_status = if db.has_polygons() {
+            "enabled"
+        } else {
+            "disabled"
+        };
+        info!("Database loaded: {count} villages, polygon containment: {poly_status}");
         Ok(Self { db })
     }
 }
@@ -267,7 +276,13 @@ async fn main() {
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
 
-    let state = Arc::new(AppState::new().expect("failed to initialize database"));
+    let args: Vec<String> = std::env::args().collect();
+    let poly_path = match args.iter().position(|a| a == "--poly") {
+        Some(i) if i + 1 < args.len() => Some(args[i + 1].as_str()),
+        _ => None,
+    };
+
+    let state = Arc::new(AppState::new(poly_path).expect("failed to initialize database"));
 
     let cors = CorsLayer::new()
         .allow_origin(Any)

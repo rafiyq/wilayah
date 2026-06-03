@@ -55,3 +55,7 @@ required-features = ["raw-sqlite"]
 [[test]]
 name = "db_integrity"
 required-features = ["raw-sqlite"]
+
+[[test]]
+name = "polygon_locate"
+required-features = ["raw-sqlite"]
