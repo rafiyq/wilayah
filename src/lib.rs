@@ -63,9 +63,9 @@ mod db;
 pub mod builder;
 
 pub use types::{
-    deserialize_vertices, haversine_km, location_from_village, point_in_polygon, point_in_ring,
-    serialize_vertices, AdminLevel, DataInfo, LocateMethod, Location, LookupResult, PipResult,
-    PrefixResult, Village,
+    bbox, deserialize_vertices, haversine_km, location_from_village, point_in_polygon,
+    point_in_ring, serialize_vertices, AdminLevel, DataInfo, LocateMethod, Location, LookupResult,
+    PipResult, PrefixResult, Village, CODE_PREFIX_MAX_LIMIT, NEAREST_MAX_LIMIT, SEARCH_MAX_LIMIT,
 };
 
 #[cfg(feature = "build-db")]

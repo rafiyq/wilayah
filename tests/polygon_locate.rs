@@ -1,4 +1,4 @@
-use wilayah::{serialize_vertices, Database, LocateMethod};
+use wilayah::{bbox, serialize_vertices, Database, LocateMethod};
 
 fn create_test_poly_db(village_id: i64, ring: &[(f64, f64)]) -> tempfile::NamedTempFile {
     let file = tempfile::NamedTempFile::new().expect("create temp file");
@@ -36,16 +36,7 @@ fn create_test_poly_db(village_id: i64, ring: &[(f64, f64)]) -> tempfile::NamedT
     )
     .unwrap();
 
-    let mut min_lat = f64::MAX;
-    let mut max_lat = f64::MIN;
-    let mut min_lon = f64::MAX;
-    let mut max_lon = f64::MIN;
-    for &(lat, lon) in ring {
-        min_lat = min_lat.min(lat);
-        max_lat = max_lat.max(lat);
-        min_lon = min_lon.min(lon);
-        max_lon = max_lon.max(lon);
-    }
+    let (min_lat, max_lat, min_lon, max_lon) = bbox(ring);
 
     let blob = serialize_vertices(ring);
 

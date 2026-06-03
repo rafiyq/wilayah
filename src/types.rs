@@ -4,6 +4,15 @@ use serde::Serialize;
 /// Earth's mean radius in kilometers, used by [`haversine_km`].
 pub const EARTH_RADIUS_KM: f64 = 6371.0;
 
+/// Maximum number of results returned by [`Database::find_nearest`](crate::Database::find_nearest).
+pub const NEAREST_MAX_LIMIT: usize = 20;
+
+/// Maximum number of results returned by [`Database::find_by_name`](crate::Database::find_by_name).
+pub const SEARCH_MAX_LIMIT: usize = 100;
+
+/// Maximum number of results per page returned by [`Database::find_by_code_prefix`](crate::Database::find_by_code_prefix).
+pub const CODE_PREFIX_MAX_LIMIT: usize = 1000;
+
 /// Compute the great-circle distance between two points using the Haversine formula.
 ///
 /// Returns distance in kilometers.
@@ -234,6 +243,23 @@ impl fmt::Display for PrefixResult {
             self.has_more,
         )
     }
+}
+
+/// Compute the axis-aligned bounding box of a polygon ring.
+///
+/// Returns `(min_lat, max_lat, min_lon, max_lon)`.
+pub fn bbox(ring: &[(f64, f64)]) -> (f64, f64, f64, f64) {
+    let mut min_lat = f64::MAX;
+    let mut max_lat = f64::MIN;
+    let mut min_lon = f64::MAX;
+    let mut max_lon = f64::MIN;
+    for &(lat, lon) in ring {
+        min_lat = min_lat.min(lat);
+        max_lat = max_lat.max(lat);
+        min_lon = min_lon.min(lon);
+        max_lon = max_lon.max(lon);
+    }
+    (min_lat, max_lat, min_lon, max_lon)
 }
 
 /// Result of a point-in-polygon test.

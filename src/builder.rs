@@ -1084,16 +1084,7 @@ fn build_poly_db(
                 let vertices: Vec<(f64, f64)> = ring.iter().map(|&[lat, lon]| (lat, lon)).collect();
                 let blob = crate::types::serialize_vertices(&vertices);
 
-                let mut min_lat = f64::MAX;
-                let mut max_lat = f64::MIN;
-                let mut min_lon = f64::MAX;
-                let mut max_lon = f64::MIN;
-                for &(lat, lon) in &vertices {
-                    min_lat = min_lat.min(lat);
-                    max_lat = max_lat.max(lat);
-                    min_lon = min_lon.min(lon);
-                    max_lon = max_lon.max(lon);
-                }
+                let (min_lat, max_lat, min_lon, max_lon) = crate::types::bbox(&vertices);
 
                 row_id += 1;
                 ins.execute(rusqlite::params![
@@ -1137,17 +1128,8 @@ fn classify_rings(rings: &[Vec<[f64; 2]>]) -> Vec<&'static str> {
     let bboxes: Vec<(f64, f64, f64, f64)> = rings
         .iter()
         .map(|ring| {
-            let mut min_lat = f64::MAX;
-            let mut max_lat = f64::MIN;
-            let mut min_lon = f64::MAX;
-            let mut max_lon = f64::MIN;
-            for &[lat, lon] in ring {
-                min_lat = min_lat.min(lat);
-                max_lat = max_lat.max(lat);
-                min_lon = min_lon.min(lon);
-                max_lon = max_lon.max(lon);
-            }
-            (min_lat, max_lat, min_lon, max_lon)
+            let vertices: Vec<(f64, f64)> = ring.iter().map(|&[lat, lon]| (lat, lon)).collect();
+            crate::types::bbox(&vertices)
         })
         .collect();
 

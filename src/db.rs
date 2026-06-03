@@ -5,7 +5,8 @@ use std::sync::{Mutex, OnceLock};
 
 use crate::types::{
     deserialize_vertices, haversine_km, location_from_village, point_in_polygon, DataInfo,
-    LocateMethod, Location, LookupResult, PrefixResult, Village,
+    LocateMethod, Location, LookupResult, PrefixResult, Village, CODE_PREFIX_MAX_LIMIT,
+    NEAREST_MAX_LIMIT, SEARCH_MAX_LIMIT,
 };
 
 const DB_BYTES: &[u8] = include_bytes!(env!("LOCATION_DB_PATH"));
@@ -389,7 +390,7 @@ pub(crate) fn cached_data_info() -> &'static DataInfo {
 }
 
 fn nearest(conn: &Connection, lat: f64, lon: f64, limit: usize) -> Result<Vec<Village>> {
-    let limit = limit.clamp(1, 20);
+    let limit = limit.clamp(1, NEAREST_MAX_LIMIT);
 
     let deltas: [f64; 10] = [0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0, 15.0, 45.0, 180.0];
 
@@ -443,7 +444,7 @@ fn nearest(conn: &Connection, lat: f64, lon: f64, limit: usize) -> Result<Vec<Vi
 }
 
 fn search(conn: &Connection, query: &str, limit: usize) -> Result<Vec<Village>> {
-    let limit = limit.clamp(1, 100);
+    let limit = limit.clamp(1, SEARCH_MAX_LIMIT);
 
     let sql = "
         SELECT l.kode, l.nama, l.kecamatan, l.kota, l.provinsi, l.lat, l.lon
@@ -503,7 +504,7 @@ fn by_code_prefix(
     limit: usize,
     offset: usize,
 ) -> Result<PrefixResult> {
-    let limit = limit.clamp(1, 1000);
+    let limit = limit.clamp(1, CODE_PREFIX_MAX_LIMIT);
     let pattern = format!("{}%", prefix);
 
     // Get total count (COUNT(*) returns i64, cast to usize)
