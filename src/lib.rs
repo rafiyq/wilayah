@@ -56,6 +56,13 @@
 /// helper for building administrative hierarchies from village codes.
 pub mod types;
 
+/// Point-in-polygon algorithms and vertex serialization.
+///
+/// Contains [`PipResult`], [`point_in_ring`], [`point_in_polygon`],
+/// [`bbox`], [`serialize_vertices`], and [`deserialize_vertices`].
+/// These are also re-exported from [`types`] for backward compatibility.
+pub mod geometry;
+
 #[cfg(feature = "db")]
 mod db;
 
