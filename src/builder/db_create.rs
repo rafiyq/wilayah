@@ -550,4 +550,54 @@ mod tests {
 
         fs::remove_file(&db_path).unwrap();
     }
+
+    #[test]
+    fn test_build_poly_db_creates_valid_db() {
+        let big_data = vec![BigRecord {
+            code: "31.71.03.1001".to_string(),
+            name: "Kemayoran".to_string(),
+            district: "Kemayoran".to_string(),
+            city: "Jakarta Pusat".to_string(),
+            province: "Jakarta".to_string(),
+            lat: -6.1647,
+            lon: 106.8453,
+            rings: Some(vec![vec![
+                [-6.16, 106.84],
+                [-6.16, 106.86],
+                [-6.17, 106.86],
+                [-6.17, 106.84],
+                [-6.16, 106.84],
+            ]]),
+        }];
+
+        let temp_dir = std::env::temp_dir();
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let poly_path = temp_dir.join(format!("test_wilayah_poly_{}.db", timestamp));
+
+        build_poly_db(&big_data, &poly_path, RingClassification::SeparateRings)
+            .expect("build_poly_db should succeed");
+
+        let conn = rusqlite::Connection::open(&poly_path).expect("open built poly DB");
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM village_polygons", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 1, "should have 1 polygon ring");
+
+        let ring_type: String = conn
+            .query_row(
+                "SELECT ring_type FROM village_polygons WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(ring_type, "exterior");
+
+        fs::remove_file(&poly_path).unwrap();
+    }
 }

@@ -270,4 +270,59 @@ mod tests {
         assert_eq!(lat, 0.0);
         assert_eq!(lon, 0.0);
     }
+
+    #[test]
+    fn test_extract_rings_rings_format() {
+        let geom = json!({
+            "rings": [
+                [[0.0, -6.0], [0.0, -8.0], [2.0, -8.0], [2.0, -6.0], [0.0, -6.0]],
+                [[0.5, -6.5], [0.5, -7.5], [1.5, -7.5], [1.5, -6.5], [0.5, -6.5]]
+            ]
+        });
+        let rings = extract_rings(&geom).expect("should extract rings");
+        assert_eq!(rings.len(), 2);
+        assert_eq!(rings[0].len(), 5);
+        assert_eq!(rings[0][0], [-6.0, 0.0]);
+    }
+
+    #[test]
+    fn test_extract_rings_no_rings_key() {
+        let geom = json!({"coordinates": []});
+        assert!(extract_rings(&geom).is_none());
+    }
+
+    #[test]
+    fn test_classify_rings_separate() {
+        let ring1 = vec![
+            [0.0, 0.0],
+            [0.0, 10.0],
+            [10.0, 10.0],
+            [10.0, 0.0],
+            [0.0, 0.0],
+        ];
+        let ring2 = vec![
+            [20.0, 20.0],
+            [20.0, 30.0],
+            [30.0, 30.0],
+            [30.0, 20.0],
+            [20.0, 20.0],
+        ];
+        let types = classify_rings(&[ring1, ring2]);
+        assert_eq!(types, vec!["exterior", "exterior"]);
+    }
+
+    #[test]
+    fn test_classify_rings_with_hole() {
+        let exterior = vec![
+            [0.0, 0.0],
+            [0.0, 10.0],
+            [10.0, 10.0],
+            [10.0, 0.0],
+            [0.0, 0.0],
+        ];
+        let hole = vec![[2.0, 2.0], [2.0, 8.0], [8.0, 8.0], [8.0, 2.0], [2.0, 2.0]];
+        let types = classify_rings(&[exterior, hole]);
+        assert_eq!(types[0], "exterior");
+        assert_eq!(types[1], "interior");
+    }
 }

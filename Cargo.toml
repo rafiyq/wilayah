@@ -58,3 +58,15 @@ required-features = ["raw-sqlite"]
 [[test]]
 name = "polygon_locate"
 required-features = ["raw-sqlite"]
+
+[[test]]
+name = "query"
+
+[[test]]
+name = "locate"
+
+[[test]]
+name = "geometry"
+
+[[test]]
+name = "types"

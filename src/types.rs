@@ -248,16 +248,3 @@ impl fmt::Display for PrefixResult {
         )
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_haversine_km() {
-        let d = haversine_km(-6.1647, 106.8453, -6.1647, 106.8453);
-        assert!(d.abs() < 0.001, "same point should be 0 km, got {d}");
-        let d = haversine_km(-6.1647, 106.8453, -6.2, 106.8);
-        assert!(d > 0.0 && d < 50.0, "nearby point should be close, got {d}");
-    }
-}

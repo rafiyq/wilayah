@@ -83,36 +83,6 @@ fn test_rtree_matches_locations_count() {
 }
 
 #[test]
-fn test_fts_search_works() {
-    let db = Database::open().unwrap();
-    let results = db.find_by_name("kemayoran", 10).unwrap();
-    assert!(!results.is_empty());
-    assert!(results
-        .iter()
-        .any(|v| v.name.to_lowercase().contains("kemayoran")));
-}
-
-#[test]
-fn test_find_by_code_known() {
-    let db = Database::open().unwrap();
-    let v = db.find_by_code("31.71.03.1001").unwrap();
-    assert!(v.is_some());
-    let v = v.unwrap();
-    assert_eq!(v.code, "31.71.03.1001");
-    assert_eq!(v.name, "Kemayoran");
-}
-
-#[test]
-fn test_find_by_code_prefix_province() {
-    let db = Database::open().unwrap();
-    let result = db.find_by_code_prefix("31", 100, 0).unwrap();
-    assert!(!result.villages.is_empty());
-    assert!(result.villages.iter().all(|v| v.code.starts_with("31")));
-    assert!(result.total > 100);
-    assert!(result.has_more);
-}
-
-#[test]
 fn test_db_meta_table() {
     let db = Database::open().unwrap();
     let info = db.data_info();
