@@ -6,6 +6,23 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Reference-pattern validation for note keyword matching — keywords like "UU" and "ND" only trigger note stripping when followed by reference-like text (numbers, "No.", "nama", etc.), preventing false positives on village names containing these abbreviations
+- Two-tier note keyword system: self-validating keywords (always indicate a note, e.g., "Semula", "Menjadi") and reference-validated keywords (require confirmation, e.g., "UU", "Perda")
+- `extract_district_name()` and `skip_code_prefix()` — proper kecamatan name extraction that strips trailing " - VILLAGE_COUNT" and handles digit-starting district names
+- `strip_trailing_separators()` — iterative cleanup of trailing dashes, commas, and spaces
+- `has_reference_indicator()` and `find_note_boundary()` — core note detection logic with reference validation
+- 26 new unit tests for parser accuracy (38 total, up from 12)
+
+### Changed
+
+- Note keyword list expanded from 13 to 34 keywords — added "Semula", "Qanun", "Amar", "UU", "ND", "Perda", "Perbup", "Kepbup", "PMD", "Surat", "Srt", "Penataan", "Pengkatan", "Penghapusan", "Berubah", "Lampiran", "Letak", "Ds.", "Afd.", "wil. Kec", "wil Kec", "Hal Hasil"
+- Removed generic "Hasil" keyword (too broad — caused false positives on legitimate names); replaced with specific "Nagari hasil" and "Hal Hasil"
+- Village name word truncation limit raised from 4 to 5 words — preserves Minangkabau names like "Tanah Sirah Piai Nan XX"
+- `extract_village_name()` now lowercases the raw text once instead of 13 times per village
+- Kecamatan regex changed from `[A-Z]` to `[A-Z0-9]` — allows district names starting with digits (e.g., "2 x 11 Anam Lingkuang")
+- District name extraction rewritten — `rfind` + `find(alphabetic)` replaced with `extract_district_name()` + `skip_code_prefix()`, eliminating trailing " -" garbage in all ~7,000+ kecamatan names
+- Village code regex changed from `^...\\s` to `^...(?:\\s|$)` — matches codes at end-of-line
+
 - `Database` struct — wraps an internal SQLite connection, hiding `rusqlite` from the public API
 - `wilayah::Error` — custom error type that wraps `rusqlite::Error` without exposing it
 - `wilayah::Result<T>` — type alias for `std::result::Result<T, Error>`
