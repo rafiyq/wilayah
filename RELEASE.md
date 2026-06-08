@@ -23,11 +23,15 @@ The repository includes a GitHub Actions workflow that automates the entire rele
    ```
 
 4. The `release` workflow will automatically:
-   - Build the database from the pipeline
+   - Build the database from the pipeline (with polygons + parsed villages)
    - Run tests
    - Publish the crate to crates.io
    - Create a GitHub Release with the title `v<version>` and the changelog from `CHANGELOG.md`
-   - Upload the `data/locations.db` artifact to the release
+   - Upload the following release assets:
+     - `locations.db` — main SQLite database (~27 MB)
+     - `locations-poly.db` — polygon boundary database (for containment-based locate)
+     - `parsed_villages.json` — PDF parser output with raw names (for auditing)
+     - `big_villages.json` — BIG ArcGIS API cache (avoids re-fetching 84+ batches)
 
 ### Required secrets
 
@@ -46,10 +50,10 @@ If you prefer to release manually, follow these steps:
 1. **Update version** in `Cargo.toml`.
 2. **Rebuild database from scratch**:
 
-   ```bash
-   rm -rf data/cache data/locations.db
-   cargo run --example build_db --features build-db
-   ```
+```bash
+rm -rf data/cache data/locations.db
+cargo run --example build_db --features build-db -- --include-polygons --save-parsed-villages raw
+```
 
    This runs the full pipeline:
    - Downloads Kemendagri PDF (~57 MB)
@@ -83,14 +87,22 @@ If you prefer to release manually, follow these steps:
 
 6. **Create GitHub release with database artifact**:
 
-   ```bash
-   gh release create "v<version>" \
-     --title "v<version>" \
-     --notes "See CHANGELOG.md for details."
-   gh release upload "v<version>" data/locations.db
-   ```
+```bash
+gh release create "v<version>" \
+  --title "v<version>" \
+  --notes "See CHANGELOG.md for details."
+gh release upload "v<version>" \
+  data/locations.db \
+  data/locations-poly.db \
+  data/cache/parsed_villages.json \
+  data/cache/big_villages.json
+```
 
-   The pre-built database is not committed to the repository; it is distributed via GitHub Releases.
+The release assets are:
+- `locations.db` — main SQLite database (downloaded by `build.rs` for downstream users)
+- `locations-poly.db` — polygon boundary database (opt-in, for `LocateMethod::Contained`)
+- `parsed_villages.json` — PDF parser output with raw village names (for auditing)
+- `big_villages.json` — BIG ArcGIS API cache (avoids re-fetching 84+ API batches)
 
 ## Post-release
 

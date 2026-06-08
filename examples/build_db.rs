@@ -1,13 +1,12 @@
 use rusqlite::Connection;
 use serde_json::{json, Value};
-use wilayah::builder::Pipeline;
+use wilayah::builder::{ParseOutputDetail, Pipeline};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mut pipeline = Pipeline::new();
     let mut save_legacy_snapshot = false;
 
-    // Parse simple flags (not using clap for minimalism)
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -55,6 +54,31 @@ fn main() {
                 save_legacy_snapshot = true;
                 i += 1;
             }
+            "--include-polygons" => {
+                pipeline = pipeline.include_polygons(true);
+                i += 1;
+            }
+            "--save-parsed-villages" => {
+                let detail = if i + 1 < args.len() && !args[i + 1].starts_with('-') {
+                    let level = &args[i + 1];
+                    i += 2;
+                    match level.as_str() {
+                        "minimal" => ParseOutputDetail::Minimal,
+                        "raw" => ParseOutputDetail::WithRawName,
+                        "full" => ParseOutputDetail::Full,
+                        _ => {
+                            eprintln!(
+                                "error: unknown detail level '{level}' (use minimal, raw, or full)"
+                            );
+                            std::process::exit(1);
+                        }
+                    }
+                } else {
+                    i += 1;
+                    ParseOutputDetail::Minimal
+                };
+                pipeline = pipeline.save_parsed_villages(detail);
+            }
             _ => {
                 eprintln!("warning: unknown argument: {}", args[i]);
                 i += 1;
@@ -66,6 +90,12 @@ fn main() {
         Ok(output) => {
             println!("Pipeline completed successfully.");
             println!("Database: {}", output.db_path.display());
+            if let Some(poly) = &output.poly_db_path {
+                println!("Polygon DB: {}", poly.display());
+            }
+            if let Some(parsed) = &output.parsed_villages_path {
+                println!("Parsed villages: {}", parsed.display());
+            }
             println!("Villages: {}", output.village_count);
             println!("SHA-256: {}", output.sha256);
 

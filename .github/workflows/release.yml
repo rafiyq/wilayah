@@ -11,48 +11,52 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          components: clippy, rustfmt
+    - uses: actions/checkout@v6
+    - uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        components: clippy, rustfmt
 
-      - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y poppler-utils
+    - name: Install system dependencies
+      run: sudo apt-get update && sudo apt-get install -y poppler-utils
 
-      - name: Build database from pipeline
-        run: cargo run --example build_db --features build-db
-        env:
-          WILAYAH_REFRESH_BIG: "1"
+    - name: Build database from pipeline
+      run: cargo run --example build_db --features build-db -- --include-polygons --save-parsed-villages raw
+      env:
+        WILAYAH_REFRESH_BIG: "1"
 
-      - name: Run tests
-        run: cargo test --features build-db
+    - name: Run tests
+      run: cargo test --features build-db
 
-      - name: Check formatting
-        run: cargo fmt --check --all
+    - name: Check formatting
+      run: cargo fmt --check --all
 
-      - name: Run clippy
-        run: cargo clippy --all-features -- -D warnings
+    - name: Run clippy
+      run: cargo clippy --all-features -- -D warnings
 
-      - name: Publish to crates.io (dry-run)
-        run: cargo publish --dry-run
+    - name: Publish to crates.io (dry-run)
+      run: cargo publish --dry-run
 
-      - name: Publish to crates.io
-        run: cargo publish
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+    - name: Publish to crates.io
+      run: cargo publish
+      env:
+        CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
-      - name: Extract changelog for this version
-        id: changelog
-        run: |
-          version="${{ github.ref_name }}"
-          awk "/^## ${version#v}/,/^## [0-9]/" CHANGELOG.md | head -n -1 > release_notes.md
-          cat release_notes.md
+    - name: Extract changelog for this version
+      id: changelog
+      run: |
+        version="${{ github.ref_name }}"
+        awk "/^## ${version#v}/,/^## [0-9]/" CHANGELOG.md | head -n -1 > release_notes.md
+        cat release_notes.md
 
-      - name: Create GitHub Release and upload database
-        uses: softprops/action-gh-release@v3
-        with:
-          tag_name: ${{ github.ref_name }}
-          name: ${{ github.ref_name }}
-          body_path: release_notes.md
-          files: data/locations.db
-          generate_release_notes: false
+    - name: Create GitHub Release and upload assets
+      uses: softprops/action-gh-release@v3
+      with:
+        tag_name: ${{ github.ref_name }}
+        name: ${{ github.ref_name }}
+        body_path: release_notes.md
+        files: |
+          data/locations.db
+          data/locations-poly.db
+          data/cache/parsed_villages.json
+          data/cache/big_villages.json
+        generate_release_notes: false

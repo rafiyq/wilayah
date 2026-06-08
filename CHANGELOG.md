@@ -2,10 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
-## 0.5.0 - 2026-05-31
+## 0.5.0 - 2026-06-08
 
 ### Added
 
+- `ParseOutputDetail` enum — controls detail level when saving parsed village records (`Minimal`, `WithRawName`, `Full`)
+- `Pipeline::save_parsed_villages(detail)` — opt-in builder method to save PDF parser output as JSON
+- `PipelineOutput::parsed_villages_path` — path to the saved parsed villages JSON
+- `--include-polygons` flag on `build_db` example — enables polygon database output
+- `--save-parsed-villages[=minimal|raw|full]` flag on `build_db` example — saves PDF parser output
+- Release assets: `locations-poly.db`, `parsed_villages.json`, `big_villages.json` in addition to `locations.db`
 - Reference-pattern validation for note keyword matching — keywords like "UU" and "ND" only trigger note stripping when followed by reference-like text (numbers, "No.", "nama", etc.), preventing false positives on village names containing these abbreviations
 - Two-tier note keyword system: self-validating keywords (always indicate a note, e.g., "Semula", "Menjadi") and reference-validated keywords (require confirmation, e.g., "UU", "Perda")
 - `extract_district_name()` and `skip_code_prefix()` — proper kecamatan name extraction that strips trailing " - VILLAGE_COUNT" and handles digit-starting district names
@@ -53,9 +59,6 @@ All notable changes to this project will be documented in this file.
 - `PUT /update` and `PUT /update/meta` endpoints in Cloudflare Worker (auth-gated via `ADMIN_TOKEN` secret)
 - CORS preflight (`OPTIONS`) handler in Cloudflare Worker
 - `GET /locate` endpoint documented in README
-
-### Changed
-
 - **BREAKING**: All query functions now take `&self` on `Database` instead of `&rusqlite::Connection` as the first parameter
 - **BREAKING**: All query functions now return `wilayah::Result<T>` instead of `rusqlite::Result<T>`
 - **BREAKING**: `open()` renamed to `Database::open()` and returns `Result<Database>` instead of `rusqlite::Result<Connection>`

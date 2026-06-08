@@ -1,12 +1,45 @@
 //! PDF text parsing for village records.
 
+use std::path::Path;
+
 /// A parsed village record from the Kemendagri PDF.
+#[derive(serde::Serialize)]
 pub(crate) struct VillageRecord {
     pub(crate) code: String,
     pub(crate) name: String,
     pub(crate) district: String,
     pub(crate) city: String,
     pub(crate) province: String,
+    #[serde(skip_serializing)]
+    pub(crate) raw_name: Option<String>,
+    #[serde(skip_serializing)]
+    pub(crate) note_keyword: Option<String>,
+    #[serde(skip_serializing)]
+    pub(crate) note_boundary: Option<usize>,
+}
+
+/// How much detail to include when saving parsed village records to JSON.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParseOutputDetail {
+    /// Code and cleaned name only (same as what goes into the database).
+    Minimal,
+    /// Code, cleaned name, and raw name before note stripping / truncation.
+    WithRawName,
+    /// Code, cleaned name, raw name, and note detection metadata
+    /// (keyword matched, boundary position).
+    Full,
+}
+
+/// Result of extracting a village name from PDF text, with optional metadata.
+pub(crate) struct ExtractedName {
+    /// The cleaned village name (after note stripping + 5-word truncation).
+    pub(crate) name: String,
+    /// The raw text before note stripping and truncation (if different from name).
+    pub(crate) raw_name: Option<String>,
+    /// The note keyword that was detected, if any.
+    pub(crate) note_keyword: Option<String>,
+    /// The byte position where the note boundary was found.
+    pub(crate) note_boundary: Option<usize>,
 }
 
 /// A parsed section header from the PDF (province + city grouping).
@@ -123,31 +156,45 @@ fn has_reference_indicator(text_lower: &str, pos: usize, window: usize) -> bool 
     false
 }
 
+/// Result of searching for a note keyword in village name text.
+struct NoteMatch {
+    /// Byte position where the note keyword starts.
+    pos: usize,
+    /// The keyword that was matched (original casing).
+    keyword: &'static str,
+}
+
 /// Find the earliest note boundary in `raw` by checking all note keywords.
 ///
 /// Self-validating keywords always mark a note boundary.
 /// Reference-validated keywords only mark a boundary if followed by a
 /// reference-like pattern within 30 characters.
-fn find_note_boundary(raw: &str, raw_lower: &str) -> usize {
-    let mut earliest = raw.len();
+///
+/// Returns the earliest match if found, or `None` if no note keyword was detected.
+fn find_note_boundary(raw_lower: &str) -> Option<NoteMatch> {
+    let mut best: Option<NoteMatch> = None;
 
     for keyword in SELF_VALIDATING_KEYWORDS {
         let kw_lower = keyword.to_lowercase();
         if let Some(pos) = raw_lower.find(&kw_lower) {
-            earliest = earliest.min(pos);
+            if best.as_ref().is_none_or(|b| pos < b.pos) {
+                best = Some(NoteMatch { pos, keyword });
+            }
         }
     }
 
     for keyword in REFERENCE_VALIDATED_KEYWORDS {
         let kw_lower = keyword.to_lowercase();
         if let Some(pos) = raw_lower.find(&kw_lower) {
-            if has_reference_indicator(raw_lower, pos + kw_lower.len(), 30) {
-                earliest = earliest.min(pos);
+            if has_reference_indicator(raw_lower, pos + kw_lower.len(), 30)
+                && best.as_ref().is_none_or(|b| pos < b.pos)
+            {
+                best = Some(NoteMatch { pos, keyword });
             }
         }
     }
 
-    earliest
+    best
 }
 
 /// Pre-compiled regex patterns for parsing village records from PDF text.
@@ -207,10 +254,10 @@ impl VillageParser {
                 }
 
                 let after_code = &line[code.end()..];
-                if let Some(name) = extract_village_name(after_code, &self.name_re) {
+                if let Some(extracted) = extract_village_name(after_code, &self.name_re) {
                     villages.push(VillageRecord {
                         code: code_str,
-                        name,
+                        name: extracted.name,
                         district: if current_district_name.is_empty() {
                             current_district_code.clone()
                         } else {
@@ -218,6 +265,9 @@ impl VillageParser {
                         },
                         city: current_city.to_string(),
                         province: current_province.to_string(),
+                        raw_name: extracted.raw_name,
+                        note_keyword: extracted.note_keyword,
+                        note_boundary: extracted.note_boundary,
                     });
                 }
             }
@@ -320,7 +370,10 @@ fn strip_trailing_separators(s: &str) -> &str {
 }
 
 /// Extract a village name from the text after the village code, stripping notes.
-pub(crate) fn extract_village_name(after_code: &str, name_re: &regex::Regex) -> Option<String> {
+pub(crate) fn extract_village_name(
+    after_code: &str,
+    name_re: &regex::Regex,
+) -> Option<ExtractedName> {
     let cap = name_re.captures(after_code)?;
     let raw = cap.get(1)?.as_str().trim();
     if raw.is_empty() || raw.chars().next().map(|c| c.is_numeric()).unwrap_or(false) {
@@ -328,18 +381,39 @@ pub(crate) fn extract_village_name(after_code: &str, name_re: &regex::Regex) -> 
     }
 
     let raw_lower = raw.to_lowercase();
-    let boundary = find_note_boundary(raw, &raw_lower);
-    let name = raw[..boundary].trim();
-    if name.is_empty() {
-        None
-    } else {
-        Some(
-            name.split_whitespace()
-                .take(MAX_NAME_WORDS)
-                .collect::<Vec<_>>()
-                .join(" "),
-        )
+    let (cleaned, note_keyword, note_boundary) = match find_note_boundary(&raw_lower) {
+        Some(note) => {
+            let cleaned = raw[..note.pos].trim();
+            if cleaned.is_empty() {
+                return None;
+            }
+            (cleaned, Some(note.keyword.to_string()), Some(note.pos))
+        }
+        None => (raw, None, None),
+    };
+
+    let truncated: String = cleaned
+        .split_whitespace()
+        .take(MAX_NAME_WORDS)
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    if truncated.is_empty() {
+        return None;
     }
+
+    let raw_name = if truncated != raw {
+        Some(raw.to_string())
+    } else {
+        None
+    };
+
+    Some(ExtractedName {
+        name: truncated,
+        raw_name,
+        note_keyword,
+        note_boundary,
+    })
 }
 
 /// Parse a section header line (e.g., `C.Kabupaten.1) Kabupaten Bogor Provinsi Jawa Barat`).
@@ -359,6 +433,75 @@ pub(crate) fn parse_section_header<'a>(
     } else {
         None
     }
+}
+
+/// Save parsed village records to a JSON file.
+///
+/// The level of detail is controlled by `detail`:
+/// - `Minimal`: code + cleaned name + district + city + province
+/// - `WithRawName`: adds `raw_name` field (original text before note stripping)
+/// - `Full`: adds `note_keyword` and `note_boundary` fields
+pub(crate) fn save_parsed_villages(
+    villages: &[VillageRecord],
+    detail: ParseOutputDetail,
+    path: &Path,
+) -> Result<(), super::PipelineError> {
+    use super::PipelineResultExt;
+    let json_data: Vec<serde_json::Value> = villages
+        .iter()
+        .map(|v| {
+            let mut obj = serde_json::json!({
+                "code": v.code,
+                "name": v.name,
+                "district": v.district,
+                "city": v.city,
+                "province": v.province,
+            });
+            let map = obj.as_object_mut().unwrap();
+            match detail {
+                ParseOutputDetail::Minimal => {}
+                ParseOutputDetail::WithRawName => {
+                    map.insert(
+                        "raw_name".to_string(),
+                        match &v.raw_name {
+                            Some(rn) => serde_json::Value::String(rn.clone()),
+                            None => serde_json::Value::Null,
+                        },
+                    );
+                }
+                ParseOutputDetail::Full => {
+                    map.insert(
+                        "raw_name".to_string(),
+                        match &v.raw_name {
+                            Some(rn) => serde_json::Value::String(rn.clone()),
+                            None => serde_json::Value::Null,
+                        },
+                    );
+                    map.insert(
+                        "note_keyword".to_string(),
+                        match &v.note_keyword {
+                            Some(kw) => serde_json::Value::String(kw.clone()),
+                            None => serde_json::Value::Null,
+                        },
+                    );
+                    map.insert(
+                        "note_boundary".to_string(),
+                        match v.note_boundary {
+                            Some(b) => serde_json::Value::Number((b as u64).into()),
+                            None => serde_json::Value::Null,
+                        },
+                    );
+                }
+            }
+            obj
+        })
+        .collect();
+
+    let json_str =
+        serde_json::to_string_pretty(&json_data).ctx("failed to serialize parsed villages")?;
+    std::fs::write(path, json_str).ctx("failed to write parsed villages JSON")?;
+    eprintln!("Saved {} parsed villages to {:?}", villages.len(), path);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -414,7 +557,10 @@ mod tests {
         let name_re = Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap();
         let after_code = " 12 ABADIJAYA";
         let name = extract_village_name(after_code, &name_re);
-        assert_eq!(name, Some("ABADIJAYA".to_string()));
+        assert_eq!(
+            name.as_ref().map(|e| &e.name),
+            Some(&"ABADIJAYA".to_string())
+        );
     }
 
     #[test]
@@ -422,7 +568,10 @@ mod tests {
         let name_re = Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap();
         let after_code = " 12 SUKA MAJU";
         let name = extract_village_name(after_code, &name_re);
-        assert_eq!(name, Some("SUKA MAJU".to_string()));
+        assert_eq!(
+            name.as_ref().map(|e| &e.name),
+            Some(&"SUKA MAJU".to_string())
+        );
     }
 
     #[test]
@@ -430,7 +579,10 @@ mod tests {
         let name_re = Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap();
         let after_code = " 15 SUKAMAJU KEMENANGAN Pemekaran menjadi SUKAMAJU";
         let name = extract_village_name(after_code, &name_re);
-        assert_eq!(name, Some("SUKAMAJU KEMENANGAN".to_string()));
+        assert_eq!(
+            name.as_ref().map(|e| &e.name),
+            Some(&"SUKAMAJU KEMENANGAN".to_string())
+        );
     }
 
     #[test]
@@ -454,7 +606,10 @@ mod tests {
         let name_re = Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap();
         let after_code = " 10 DESA SUKAMAJU KECAMATAN BUKIT SARI LAINNYA";
         let name = extract_village_name(after_code, &name_re);
-        assert_eq!(name, Some("DESA SUKAMAJU KECAMATAN BUKIT SARI".to_string()));
+        assert_eq!(
+            name.as_ref().map(|e| &e.name),
+            Some(&"DESA SUKAMAJU KECAMATAN BUKIT SARI".to_string())
+        );
     }
 
     #[test]
@@ -462,7 +617,10 @@ mod tests {
         let name_re = Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap();
         let after_code = " 10 A B C D E F";
         let name = extract_village_name(after_code, &name_re);
-        assert_eq!(name, Some("A B C D E".to_string()));
+        assert_eq!(
+            name.as_ref().map(|e| &e.name),
+            Some(&"A B C D E".to_string())
+        );
     }
 
     #[test]
@@ -470,7 +628,7 @@ mod tests {
         let name_re = Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap();
         let after_code = " 2 RAMBONG Semula wil Kec. Bakongan Perda No. 3/2010";
         let name = extract_village_name(after_code, &name_re);
-        assert_eq!(name, Some("RAMBONG".to_string()));
+        assert_eq!(name.as_ref().map(|e| &e.name), Some(&"RAMBONG".to_string()));
     }
 
     #[test]
@@ -478,7 +636,10 @@ mod tests {
         let name_re = Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap();
         let after_code = " 23 PIRAK TIMU Qanun No. 32/2005";
         let name = extract_village_name(after_code, &name_re);
-        assert_eq!(name, Some("PIRAK TIMU".to_string()));
+        assert_eq!(
+            name.as_ref().map(|e| &e.name),
+            Some(&"PIRAK TIMU".to_string())
+        );
     }
 
     #[test]
@@ -486,7 +647,10 @@ mod tests {
         let name_re = Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap();
         let after_code = " 5 SUKAMAKMUR UU No. 4/2002";
         let name = extract_village_name(after_code, &name_re);
-        assert_eq!(name, Some("SUKAMAKMUR".to_string()));
+        assert_eq!(
+            name.as_ref().map(|e| &e.name),
+            Some(&"SUKAMAKMUR".to_string())
+        );
     }
 
     #[test]
@@ -494,7 +658,7 @@ mod tests {
         let name_re = Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap();
         let after_code = " 5 UU JAYA";
         let name = extract_village_name(after_code, &name_re);
-        assert_eq!(name, Some("UU JAYA".to_string()));
+        assert_eq!(name.as_ref().map(|e| &e.name), Some(&"UU JAYA".to_string()));
     }
 
     #[test]
@@ -502,7 +666,10 @@ mod tests {
         let name_re = Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap();
         let after_code = " 18 HASIL JAYA";
         let name = extract_village_name(after_code, &name_re);
-        assert_eq!(name, Some("HASIL JAYA".to_string()));
+        assert_eq!(
+            name.as_ref().map(|e| &e.name),
+            Some(&"HASIL JAYA".to_string())
+        );
     }
 
     #[test]
@@ -510,7 +677,10 @@ mod tests {
         let name_re = Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap();
         let after_code = " 18 LIYA BAHARI Hal Hasil Klarifikasi Nama Desa";
         let name = extract_village_name(after_code, &name_re);
-        assert_eq!(name, Some("LIYA BAHARI".to_string()));
+        assert_eq!(
+            name.as_ref().map(|e| &e.name),
+            Some(&"LIYA BAHARI".to_string())
+        );
     }
 
     #[test]
@@ -518,7 +688,7 @@ mod tests {
         let name_re = Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap();
         let after_code = " 12 MERDEKA Amar Putusan Mahkamah Agung RI Nomor 395K";
         let name = extract_village_name(after_code, &name_re);
-        assert_eq!(name, Some("MERDEKA".to_string()));
+        assert_eq!(name.as_ref().map(|e| &e.name), Some(&"MERDEKA".to_string()));
     }
 
     #[test]
@@ -526,7 +696,10 @@ mod tests {
         let name_re = Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap();
         let after_code = " 9 LEUBOK PASI Perda No. 3/2010 tentang pemekaran";
         let name = extract_village_name(after_code, &name_re);
-        assert_eq!(name, Some("LEUBOK PASI".to_string()));
+        assert_eq!(
+            name.as_ref().map(|e| &e.name),
+            Some(&"LEUBOK PASI".to_string())
+        );
     }
 
     #[test]
@@ -534,7 +707,10 @@ mod tests {
         let name_re = Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap();
         let after_code = " 7 TANAH SIRAH PIAI NAN XX";
         let name = extract_village_name(after_code, &name_re);
-        assert_eq!(name, Some("TANAH SIRAH PIAI NAN XX".to_string()));
+        assert_eq!(
+            name.as_ref().map(|e| &e.name),
+            Some(&"TANAH SIRAH PIAI NAN XX".to_string())
+        );
     }
 
     #[test]
@@ -542,7 +718,10 @@ mod tests {
         let name_re = Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap();
         let after_code = " 2 UJONG MANGKI Perbaikan nama sesuai Surat Pemkab";
         let name = extract_village_name(after_code, &name_re);
-        assert_eq!(name, Some("UJONG MANGKI".to_string()));
+        assert_eq!(
+            name.as_ref().map(|e| &e.name),
+            Some(&"UJONG MANGKI".to_string())
+        );
     }
 
     #[test]
@@ -550,7 +729,10 @@ mod tests {
         let name_re = Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap();
         let after_code = " 5 SUKAJADI ND Rekom No 140/4495/BPD";
         let name = extract_village_name(after_code, &name_re);
-        assert_eq!(name, Some("SUKAJADI".to_string()));
+        assert_eq!(
+            name.as_ref().map(|e| &e.name),
+            Some(&"SUKAJADI".to_string())
+        );
     }
 
     #[test]
@@ -628,21 +810,25 @@ C.Kabupaten.1) Kabupaten Bandung Provinsi Jawa Barat
     fn test_find_note_boundary_self_validating() {
         let raw = "RAMBONG Semula wil Kec. Bakongan";
         let raw_lower = raw.to_lowercase();
-        assert_eq!(find_note_boundary(raw, &raw_lower), 8);
+        let m = find_note_boundary(&raw_lower).unwrap();
+        assert_eq!(m.pos, 8);
+        assert_eq!(m.keyword, "Semula");
     }
 
     #[test]
     fn test_find_note_boundary_with_reference() {
         let raw = "SUKAMAKMUR UU No. 4/2002";
         let raw_lower = raw.to_lowercase();
-        assert_eq!(find_note_boundary(raw, &raw_lower), 11);
+        let m = find_note_boundary(&raw_lower).unwrap();
+        assert_eq!(m.pos, 11);
+        assert_eq!(m.keyword, "UU");
     }
 
     #[test]
     fn test_find_note_boundary_without_reference() {
         let raw = "UU JAYA";
         let raw_lower = raw.to_lowercase();
-        assert_eq!(find_note_boundary(raw, &raw_lower), raw.len());
+        assert!(find_note_boundary(&raw_lower).is_none());
     }
 
     #[test]
@@ -681,6 +867,116 @@ C.K.1) Kabupaten Bandung Provinsi Jawa Barat
         let name_re = Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap();
         let after_code = " 5 CIPAGARANTU";
         let name = extract_village_name(after_code, &name_re);
-        assert_eq!(name, Some("CIPAGARANTU".to_string()));
+        assert_eq!(
+            name.as_ref().map(|e| &e.name),
+            Some(&"CIPAGARANTU".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extracted_name_metadata_with_note() {
+        let name_re = Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap();
+        let after_code = " 2 RAMBONG Semula wil Kec. Bakongan";
+        let extracted = extract_village_name(after_code, &name_re).unwrap();
+        assert_eq!(extracted.name, "RAMBONG");
+        assert_eq!(
+            extracted.raw_name.as_deref(),
+            Some("RAMBONG Semula wil Kec. Bakongan")
+        );
+        assert_eq!(extracted.note_keyword.as_deref(), Some("Semula"));
+        assert_eq!(extracted.note_boundary, Some(8));
+    }
+
+    #[test]
+    fn test_extracted_name_metadata_no_note() {
+        let name_re = Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap();
+        let after_code = " 12 ABADIJAYA";
+        let extracted = extract_village_name(after_code, &name_re).unwrap();
+        assert_eq!(extracted.name, "ABADIJAYA");
+        assert!(extracted.raw_name.is_none());
+        assert!(extracted.note_keyword.is_none());
+        assert!(extracted.note_boundary.is_none());
+    }
+
+    #[test]
+    fn test_extracted_name_raw_name_from_truncation() {
+        let name_re = Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap();
+        let after_code = " 10 A B C D E F";
+        let extracted = extract_village_name(after_code, &name_re).unwrap();
+        assert_eq!(extracted.name, "A B C D E");
+        assert_eq!(extracted.raw_name.as_deref(), Some("A B C D E F"));
+        assert!(extracted.note_keyword.is_none());
+    }
+
+    #[test]
+    fn test_save_parsed_villages_minimal() {
+        let villages = vec![VillageRecord {
+            code: "31.71.03.1001".to_string(),
+            name: "Kemayoran".to_string(),
+            district: "Kemayoran".to_string(),
+            city: "Jakarta Pusat".to_string(),
+            province: "Jakarta".to_string(),
+            raw_name: None,
+            note_keyword: None,
+            note_boundary: None,
+        }];
+        let dir = std::env::temp_dir().join("wilayah_test_parse_minimal");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("parsed.json");
+        save_parsed_villages(&villages, ParseOutputDetail::Minimal, &path).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        let parsed: Vec<serde_json::Value> = serde_json::from_str(&content).unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0]["code"], "31.71.03.1001");
+        assert_eq!(parsed[0]["name"], "Kemayoran");
+        assert!(parsed[0].get("raw_name").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_save_parsed_villages_with_raw_name() {
+        let villages = vec![VillageRecord {
+            code: "31.71.03.1001".to_string(),
+            name: "RAMBONG".to_string(),
+            district: "Bakongan".to_string(),
+            city: "Aceh Selatan".to_string(),
+            province: "Aceh".to_string(),
+            raw_name: Some("RAMBONG Semula wil Kec. Bakongan".to_string()),
+            note_keyword: Some("Semula".to_string()),
+            note_boundary: Some(8),
+        }];
+        let dir = std::env::temp_dir().join("wilayah_test_parse_raw");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("parsed.json");
+        save_parsed_villages(&villages, ParseOutputDetail::WithRawName, &path).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        let parsed: Vec<serde_json::Value> = serde_json::from_str(&content).unwrap();
+        assert_eq!(parsed[0]["raw_name"], "RAMBONG Semula wil Kec. Bakongan");
+        assert!(parsed[0].get("note_keyword").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_save_parsed_villages_full() {
+        let villages = vec![VillageRecord {
+            code: "31.71.03.1001".to_string(),
+            name: "RAMBONG".to_string(),
+            district: "Bakongan".to_string(),
+            city: "Aceh Selatan".to_string(),
+            province: "Aceh".to_string(),
+            raw_name: Some("RAMBONG Semula wil Kec. Bakongan".to_string()),
+            note_keyword: Some("Semula".to_string()),
+            note_boundary: Some(8),
+        }];
+        let dir = std::env::temp_dir().join("wilayah_test_parse_full");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("parsed.json");
+        save_parsed_villages(&villages, ParseOutputDetail::Full, &path).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        let parsed: Vec<serde_json::Value> = serde_json::from_str(&content).unwrap();
+        assert_eq!(parsed[0]["raw_name"], "RAMBONG Semula wil Kec. Bakongan");
+        assert_eq!(parsed[0]["note_keyword"], "Semula");
+        assert_eq!(parsed[0]["note_boundary"], 8);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

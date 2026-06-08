@@ -407,6 +407,9 @@ mod tests {
             district: district.to_string(),
             city: city.to_string(),
             province: province.to_string(),
+            raw_name: None,
+            note_keyword: None,
+            note_boundary: None,
         }
     }
 

@@ -30,6 +30,8 @@ mod geometry;
 mod parse;
 mod pdf;
 
+pub use parse::ParseOutputDetail;
+
 use std::path::{Path, PathBuf};
 
 /// The government decree number and year that the Kemendagri PDF data is based on.
@@ -159,6 +161,8 @@ pub struct PipelineOutput {
     pub db_path: PathBuf,
     /// Path to the built polygon database file, if `include_polygons(true)` was set.
     pub poly_db_path: Option<PathBuf>,
+    /// Path to the saved parsed villages JSON, if `save_parsed_villages` was set.
+    pub parsed_villages_path: Option<PathBuf>,
     /// Number of villages in the database.
     pub village_count: usize,
     /// SHA-256 hash of the database file, in hexadecimal.
@@ -179,6 +183,7 @@ pub struct Pipeline {
     force_refresh_big: bool,
     ring_classification: RingClassification,
     include_polygons: bool,
+    save_parsed_villages: Option<parse::ParseOutputDetail>,
 }
 
 impl Pipeline {
@@ -204,6 +209,7 @@ impl Pipeline {
             force_refresh_big: false,
             ring_classification: RingClassification::SeparateRings,
             include_polygons: false,
+            save_parsed_villages: None,
         }
     }
 
@@ -282,6 +288,20 @@ impl Pipeline {
         self
     }
 
+    /// Enable saving parsed village records to a JSON file in the cache directory.
+    ///
+    /// The output detail level controls how much information is included:
+    /// - `Minimal`: code + cleaned name + district + city + province
+    /// - `WithRawName`: adds `raw_name` (original text before note stripping)
+    /// - `Full`: adds `note_keyword` and `note_boundary` for parser auditing
+    ///
+    /// When set, the pipeline writes `parsed_villages.json` to the cache directory
+    /// and includes its path in [`PipelineOutput::parsed_villages_path`].
+    pub fn save_parsed_villages(mut self, detail: parse::ParseOutputDetail) -> Self {
+        self.save_parsed_villages = Some(detail);
+        self
+    }
+
     /// Executes the full pipeline.
     ///
     /// Steps:
@@ -300,6 +320,15 @@ impl Pipeline {
         let pdf_path = pdf::ensure_pdf(&self.pdf_url, &self.cache_dir)?;
         let text = pdf::extract_text(&pdf_path)?;
         let villages = parse::parse_villages(&text);
+
+        let parsed_villages_path = if let Some(detail) = self.save_parsed_villages {
+            let path = self.cache_dir.join("parsed_villages.json");
+            parse::save_parsed_villages(&villages, detail, &path)?;
+            Some(path)
+        } else {
+            None
+        };
+
         let big_data = big_api::fetch_big_data(
             &self.big_api_url,
             &self.cache_dir,
@@ -331,6 +360,7 @@ impl Pipeline {
         Ok(PipelineOutput {
             db_path: self.output,
             poly_db_path,
+            parsed_villages_path,
             village_count,
             sha256,
         })
