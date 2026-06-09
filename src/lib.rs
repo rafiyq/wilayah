@@ -24,9 +24,11 @@
 //! with RTree spatial index and FTS5 full-text search. The database is embedded
 //! into the binary at compile time via a build script.
 //!
-//! On first `cargo build`, the build script downloads a pre-built database
-//! from the GitHub Releases. Subsequent builds reuse the cached database
-//! located at `data/locations.db`.
+//! When the `db` feature is enabled (default), the build script downloads a
+//! pre-built database (~27 MB) from GitHub Releases on first build. Subsequent
+//! builds reuse the cached database at `data/locations.db`. With
+//! `default-features = false` (types-only), the build script is a no-op and no
+//! download occurs.
 //!
 //! To build from scratch, run:
 //!
