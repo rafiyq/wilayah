@@ -3,10 +3,6 @@ use std::io::Read;
 use std::path::Path;
 
 fn main() {
-    if std::env::var("CARGO_FEATURE_DB").is_err() {
-        return;
-    }
-
     let out_dir = std::env::var("OUT_DIR").unwrap();
     let db_path = Path::new(&out_dir).join("locations.db");
     let data_dir = Path::new("data");
@@ -26,9 +22,9 @@ fn main() {
             Err(e) => {
                 panic!(
                     "Failed to download pre-built database: {}\n\
-                    To build from source, run:\n\
-                    cargo run --example build_db --features build-db\n\
-                    Then re-run cargo build.",
+                     To build from source, run:\n\
+                     cargo run --example build_db --features build-db\n\
+                     Then re-run cargo build.",
                     e
                 );
             }

@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
-- `build.rs` is now conditional on the `db` feature — `default-features = false` (types-only) builds skip the ~27 MB database download entirely — controls detail level when saving parsed village records (`Minimal`, `WithRawName`, `Full`)
+- `ParseOutputDetail` enum — controls detail level when saving parsed village records (`Minimal`, `WithRawName`, `Full`)
 - `Pipeline::save_parsed_villages(detail)` — opt-in builder method to save PDF parser output as JSON
 - `PipelineOutput::parsed_villages_path` — path to the saved parsed villages JSON
 - `--include-polygons` flag on `build_db` example — enables polygon database output
