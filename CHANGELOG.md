@@ -2,6 +2,40 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased 
+
+### Added
+
+- serde feature flag — enables Serialize on all public types independently of db; db implies serde automatically
+- build-db test step in CI workflow (59 builder unit tests previously never ran in CI)
+- test_deserialize_vertices_aligned test
+- builder/util.rs — shared utilities (fetch_url_with_retry, fetch_with_retry, hash_sha256, hash_file) extracted from pdf.rs and db_create.rs
+- tests/builder.rs — PipelineError unit tests with build-db feature gate (moved from tests/types.rs)
+
+### Changed
+
+- builder/geometry.rs renamed to builder/spatial.rs to avoid confusion with src/geometry.rs
+- MergedVillage fields renamed to English (code, name, district, city, province); SQL column names remain Indonesian
+- save_parsed_villages uses #[serde(skip_serializing_if)] instead of manual JSON construction
+- parse_rings_from_json removed from big_api.rs in favor of spatial::extract_rings
+- Cross-module imports fixed: crate::types::bbox/serialize_vertices/point_in_polygon → crate::geometry::*
+- BIG API cache filenames now distinguish polygon vs non-polygon builds: big_villages_with_polygons.json vs big_villages.json
+- WILAYAH_REFRESH_BIG=1 env var is now read by build_db example (was documented but never implemented)
+- village_count() uses try_into().expect() instead of count as u32 to avoid silent truncation
+- All .lock().unwrap() on Mutex replaced with .lock().unwrap_or_else(|e| e.into_inner()) to recover from poisoning
+- json_str/json_str_or changed from pub(crate) to private (only used within big_api.rs)
+- Version test uses env!("CARGO_PKG_VERSION") instead of hardcoded "0.5.1"
+- data_info() doc comment now notes it requires the db feature flag
+- Test regex patterns compiled once via OnceLock helpers (was 22 duplicate compilations)
+
+### Fixed
+
+- CI cache key referenced stale src/builder.rs (now src/builder/mod.rs)
+- RELEASE.md listed wilayah::open() (should be wilayah::Database::open()) and private data_info_from_conn() (removed)
+- README.md referenced src/builder.rs (should be src/builder/)
+- deserialize_vertices silently ignored misaligned blobs (now has debug_assert)
+- Doc list indentation warning in lib.rs
+
 ## 0.5.0 - 2026-06-08
 
 ### Added
