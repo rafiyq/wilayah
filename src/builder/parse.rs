@@ -3,18 +3,18 @@
 use std::path::Path;
 
 /// A parsed village record from the Kemendagri PDF.
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, Clone)]
 pub(crate) struct VillageRecord {
     pub(crate) code: String,
     pub(crate) name: String,
     pub(crate) district: String,
     pub(crate) city: String,
     pub(crate) province: String,
-    #[serde(skip_serializing)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) raw_name: Option<String>,
-    #[serde(skip_serializing)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) note_keyword: Option<String>,
-    #[serde(skip_serializing)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) note_boundary: Option<usize>,
 }
 
@@ -447,58 +447,35 @@ pub(crate) fn save_parsed_villages(
     path: &Path,
 ) -> Result<(), super::PipelineError> {
     use super::PipelineResultExt;
-    let json_data: Vec<serde_json::Value> = villages
+    let output: Vec<VillageRecord> = villages
         .iter()
-        .map(|v| {
-            let mut obj = serde_json::json!({
-                "code": v.code,
-                "name": v.name,
-                "district": v.district,
-                "city": v.city,
-                "province": v.province,
-            });
-            let map = obj.as_object_mut().unwrap();
-            match detail {
-                ParseOutputDetail::Minimal => {}
-                ParseOutputDetail::WithRawName => {
-                    map.insert(
-                        "raw_name".to_string(),
-                        match &v.raw_name {
-                            Some(rn) => serde_json::Value::String(rn.clone()),
-                            None => serde_json::Value::Null,
-                        },
-                    );
-                }
-                ParseOutputDetail::Full => {
-                    map.insert(
-                        "raw_name".to_string(),
-                        match &v.raw_name {
-                            Some(rn) => serde_json::Value::String(rn.clone()),
-                            None => serde_json::Value::Null,
-                        },
-                    );
-                    map.insert(
-                        "note_keyword".to_string(),
-                        match &v.note_keyword {
-                            Some(kw) => serde_json::Value::String(kw.clone()),
-                            None => serde_json::Value::Null,
-                        },
-                    );
-                    map.insert(
-                        "note_boundary".to_string(),
-                        match v.note_boundary {
-                            Some(b) => serde_json::Value::Number((b as u64).into()),
-                            None => serde_json::Value::Null,
-                        },
-                    );
-                }
-            }
-            obj
+        .map(|v| match detail {
+            ParseOutputDetail::Minimal => VillageRecord {
+                code: v.code.clone(),
+                name: v.name.clone(),
+                district: v.district.clone(),
+                city: v.city.clone(),
+                province: v.province.clone(),
+                raw_name: None,
+                note_keyword: None,
+                note_boundary: None,
+            },
+            ParseOutputDetail::WithRawName => VillageRecord {
+                code: v.code.clone(),
+                name: v.name.clone(),
+                district: v.district.clone(),
+                city: v.city.clone(),
+                province: v.province.clone(),
+                raw_name: v.raw_name.clone(),
+                note_keyword: None,
+                note_boundary: None,
+            },
+            ParseOutputDetail::Full => v.clone(),
         })
         .collect();
 
     let json_str =
-        serde_json::to_string_pretty(&json_data).ctx("failed to serialize parsed villages")?;
+        serde_json::to_string_pretty(&output).ctx("failed to serialize parsed villages")?;
     std::fs::write(path, json_str).ctx("failed to write parsed villages JSON")?;
     eprintln!("Saved {} parsed villages to {:?}", villages.len(), path);
     Ok(())

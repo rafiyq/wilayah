@@ -1,6 +1,6 @@
 //! Builder-specific geometry helpers for processing BIG ArcGIS polygon data.
 
-use crate::types;
+use crate::geometry;
 
 /// Compute the centroid of a polygon feature from ArcGIS JSON geometry.
 ///
@@ -138,7 +138,7 @@ pub(crate) fn classify_rings(rings: &[Vec<[f64; 2]>]) -> Vec<&'static str> {
         .iter()
         .map(|ring| {
             let vertices: Vec<(f64, f64)> = ring.iter().map(|&[lat, lon]| (lat, lon)).collect();
-            types::bbox(&vertices)
+            geometry::bbox(&vertices)
         })
         .collect();
 
@@ -180,7 +180,7 @@ pub(crate) fn classify_rings(rings: &[Vec<[f64; 2]>]) -> Vec<&'static str> {
                 let test_pt = (rings[i][0][0], rings[i][0][1]);
                 let exterior: Vec<(f64, f64)> =
                     rings[j].iter().map(|&[lat, lon]| (lat, lon)).collect();
-                if types::point_in_polygon(test_pt.0, test_pt.1, &exterior, &[]) {
+                if geometry::point_in_polygon(test_pt.0, test_pt.1, &exterior, &[]) {
                     types[i] = "interior";
                     break;
                 }

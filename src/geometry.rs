@@ -1,7 +1,21 @@
-//! Point-in-polygon algorithms and vertex serialization.
+//! Geographic computations: distance, point-in-polygon, and vertex serialization.
+
+/// Earth's mean radius in kilometers, used by [`haversine_km`].
+pub const EARTH_RADIUS_KM: f64 = 6371.0;
 
 /// Epsilon tolerance for floating-point comparisons in PIP calculations.
 const PIP_EPSILON: f64 = 1e-10;
+
+/// Compute the great-circle distance between two points using the Haversine formula.
+///
+/// Returns distance in kilometers.
+pub fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
+    let dlat = (lat2 - lat1).to_radians();
+    let dlon = (lon2 - lon1).to_radians();
+    let a = (dlat / 2.0).sin().powi(2)
+        + lat1.to_radians().cos() * lat2.to_radians().cos() * (dlon / 2.0).sin().powi(2);
+    EARTH_RADIUS_KM * 2.0 * a.sqrt().asin()
+}
 
 /// Compute the axis-aligned bounding box of a polygon ring.
 ///

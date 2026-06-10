@@ -3,10 +3,10 @@ use rusqlite::{functions::FunctionFlags, Connection};
 use std::sync::MutexGuard;
 use std::sync::{Mutex, OnceLock};
 
+use crate::geometry::{deserialize_vertices, haversine_km, point_in_polygon};
 use crate::types::{
-    deserialize_vertices, haversine_km, location_from_village, point_in_polygon, DataInfo,
-    LocateMethod, Location, LookupResult, PrefixResult, Village, CODE_PREFIX_MAX_LIMIT,
-    NEAREST_MAX_LIMIT, SEARCH_MAX_LIMIT,
+    location_from_village, DataInfo, LocateMethod, Location, LookupResult, PrefixResult, Village,
+    CODE_PREFIX_MAX_LIMIT, NEAREST_MAX_LIMIT, SEARCH_MAX_LIMIT,
 };
 
 const DB_BYTES: &[u8] = include_bytes!(env!("LOCATION_DB_PATH"));

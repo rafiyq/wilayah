@@ -1,13 +1,6 @@
 use core::fmt;
 use serde::Serialize;
 
-pub use crate::geometry::{
-    bbox, deserialize_vertices, point_in_polygon, point_in_ring, serialize_vertices, PipResult,
-};
-
-/// Earth's mean radius in kilometers, used by [`haversine_km`].
-pub const EARTH_RADIUS_KM: f64 = 6371.0;
-
 /// Maximum number of results returned by [`Database::find_nearest`](crate::Database::find_nearest).
 pub const NEAREST_MAX_LIMIT: usize = 20;
 
@@ -16,17 +9,6 @@ pub const SEARCH_MAX_LIMIT: usize = 100;
 
 /// Maximum number of results per page returned by [`Database::find_by_code_prefix`](crate::Database::find_by_code_prefix).
 pub const CODE_PREFIX_MAX_LIMIT: usize = 1000;
-
-/// Compute the great-circle distance between two points using the Haversine formula.
-///
-/// Returns distance in kilometers.
-pub fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
-    let dlat = (lat2 - lat1).to_radians();
-    let dlon = (lon2 - lon1).to_radians();
-    let a = (dlat / 2.0).sin().powi(2)
-        + lat1.to_radians().cos() * lat2.to_radians().cos() * (dlon / 2.0).sin().powi(2);
-    EARTH_RADIUS_KM * 2.0 * a.sqrt().asin()
-}
 
 /// Metadata about the embedded location database.
 ///

@@ -1,6 +1,6 @@
 //! PDF download and text extraction.
 
-use super::big_api::fetch_url_with_retry;
+use super::util;
 use super::PipelineError;
 use super::PipelineResultExt;
 use std::fs;
@@ -14,13 +14,8 @@ pub(crate) struct DownloadResult {
 
 /// Download a file with retries and compute its SHA-256 hash.
 pub(crate) fn download_with_sha256(url: &str) -> Result<DownloadResult, PipelineError> {
-    let data = fetch_url_with_retry(url, 5, 300, "PDF download")?;
-
-    use sha2::Digest;
-    let mut hasher = sha2::Sha256::new();
-    hasher.update(&data);
-    let sha256 = format!("{:x}", hasher.finalize());
-
+    let data = util::fetch_url_with_retry(url, 5, 300, "PDF download")?;
+    let sha256 = util::hash_sha256(&data);
     Ok(DownloadResult { data, sha256 })
 }
 

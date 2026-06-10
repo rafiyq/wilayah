@@ -1,8 +1,8 @@
 //! Database construction (main DB + polygon DB) and village merging.
 
 use super::big_api::BigRecord;
-use super::geometry;
 use super::parse::VillageRecord;
+use super::spatial;
 use super::PipelineError;
 use super::PipelineResultExt;
 use super::RingClassification;
@@ -13,11 +13,11 @@ use std::path::Path;
 
 /// A merged village record combining PDF and BIG data.
 pub(crate) struct MergedVillage {
-    pub(crate) kode: String,
-    pub(crate) nama: String,
-    pub(crate) kecamatan: String,
-    pub(crate) kota: String,
-    pub(crate) provinsi: String,
+    pub(crate) code: String,
+    pub(crate) name: String,
+    pub(crate) district: String,
+    pub(crate) city: String,
+    pub(crate) province: String,
     pub(crate) lat: f64,
     pub(crate) lon: f64,
 }
@@ -58,11 +58,11 @@ pub(crate) fn merge_villages(
     for v in villages {
         if let Some(big) = big_lookup.get(v.code.as_str()) {
             merged.push(MergedVillage {
-                kode: v.code.clone(),
-                nama: v.name.clone(),
-                kecamatan: v.district.clone(),
-                kota: v.city.clone(),
-                provinsi: v.province.clone(),
+                code: v.code.clone(),
+                name: v.name.clone(),
+                district: v.district.clone(),
+                city: v.city.clone(),
+                province: v.province.clone(),
                 lat: big.lat,
                 lon: big.lon,
             });
@@ -74,11 +74,11 @@ pub(crate) fn merge_villages(
                 .copied()
                 .unwrap_or((0.0, 0.0));
             merged.push(MergedVillage {
-                kode: v.code.clone(),
-                nama: v.name.clone(),
-                kecamatan: v.district.clone(),
-                kota: v.city.clone(),
-                provinsi: v.province.clone(),
+                code: v.code.clone(),
+                name: v.name.clone(),
+                district: v.district.clone(),
+                city: v.city.clone(),
+                province: v.province.clone(),
                 lat,
                 lon,
             });
@@ -211,28 +211,21 @@ fn insert_villages(conn: &mut Connection, villages: &[MergedVillage]) -> Result<
     let tx = conn.transaction().ctx("failed to begin transaction")?;
     {
         let mut ins_loc = tx
-            .prepare(
-                "INSERT INTO locations (id, kode, nama, kecamatan, kota, provinsi, lat, lon) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            )
-            .ctx("prepare insert locations")?;
+        .prepare(
+            "INSERT INTO locations (id, kode, nama, kecamatan, kota, provinsi, lat, lon) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        )
+        .ctx("prepare insert locations")?;
         let mut ins_rtree = tx
-            .prepare(
-                "INSERT INTO geo_rtree (id, min_lon, max_lon, min_lat, max_lat) VALUES (?1, ?2, ?3, ?4, ?5)",
-            )
-            .ctx("prepare insert rtree")?;
+        .prepare(
+            "INSERT INTO geo_rtree (id, min_lon, max_lon, min_lat, max_lat) VALUES (?1, ?2, ?3, ?4, ?5)",
+        )
+        .ctx("prepare insert rtree")?;
 
         for (i, v) in villages.iter().enumerate() {
             let rowid = (i + 1) as i64;
             ins_loc
                 .execute(rusqlite::params![
-                    rowid,
-                    v.kode,
-                    v.nama,
-                    v.kecamatan,
-                    v.kota,
-                    v.provinsi,
-                    v.lat,
-                    v.lon
+                    rowid, v.code, v.name, v.district, v.city, v.province, v.lat, v.lon
                 ])
                 .ctx("insert location")?;
             ins_rtree
@@ -338,7 +331,7 @@ fn insert_polygons(
                 RingClassification::SeparateRings => {
                     rings.iter().map(|_| "exterior").collect::<Vec<_>>()
                 }
-                RingClassification::ClassifyHoles => geometry::classify_rings(rings),
+                RingClassification::ClassifyHoles => spatial::classify_rings(rings),
             };
 
             for (ring_idx, ring) in rings.iter().enumerate() {
@@ -348,9 +341,9 @@ fn insert_polygons(
 
                 let ring_type = classified[ring_idx];
                 let vertices: Vec<(f64, f64)> = ring.iter().map(|&[lat, lon]| (lat, lon)).collect();
-                let blob = crate::types::serialize_vertices(&vertices);
+                let blob = crate::geometry::serialize_vertices(&vertices);
 
-                let (min_lat, max_lat, min_lon, max_lon) = crate::types::bbox(&vertices);
+                let (min_lat, max_lat, min_lon, max_lon) = crate::geometry::bbox(&vertices);
 
                 row_id += 1;
                 ins.execute(rusqlite::params![
@@ -376,11 +369,7 @@ fn insert_polygons(
 
 /// Compute the SHA-256 hash of a file, returned as lowercase hex.
 pub(crate) fn compute_sha256(db_path: &Path) -> Result<String, PipelineError> {
-    let data = fs::read(db_path).ctx("failed to read DB for SHA-256")?;
-    use sha2::Digest;
-    let mut hasher = sha2::Sha256::new();
-    hasher.update(&data);
-    Ok(format!("{:x}", hasher.finalize()))
+    super::util::hash_file(db_path)
 }
 
 #[cfg(test)]
@@ -462,20 +451,20 @@ mod tests {
     fn test_build_db_creates_valid_sqlite() {
         let villages = vec![
             MergedVillage {
-                kode: "31.71.03.1001".to_string(),
-                nama: "Kemayoran".to_string(),
-                kecamatan: "Kemayoran".to_string(),
-                kota: "Jakarta Pusat".to_string(),
-                provinsi: "Jakarta".to_string(),
+                code: "31.71.03.1001".to_string(),
+                name: "Kemayoran".to_string(),
+                district: "Kemayoran".to_string(),
+                city: "Jakarta Pusat".to_string(),
+                province: "Jakarta".to_string(),
                 lat: -6.1647,
                 lon: 106.8453,
             },
             MergedVillage {
-                kode: "31.71.03.1002".to_string(),
-                nama: "Gelora".to_string(),
-                kecamatan: "Senayan".to_string(),
-                kota: "Jakarta Selatan".to_string(),
-                provinsi: "Jakarta".to_string(),
+                code: "31.71.03.1002".to_string(),
+                name: "Gelora".to_string(),
+                district: "Senayan".to_string(),
+                city: "Jakarta Selatan".to_string(),
+                province: "Jakarta".to_string(),
                 lat: -6.1600,
                 lon: 106.8500,
             },

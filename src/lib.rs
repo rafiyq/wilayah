@@ -40,27 +40,26 @@
 //!   Enables [`Database`], [`Error`], and all query methods.
 //! - **`build-db`** — Pipeline for building the database from source data.
 //! - **`types`** — *(always available)* Shared types ([`Village`], [`Location`],
-//!   [`AdminLevel`], [`LocateMethod`]) and [`haversine_km()`]. Use this with
-//!   `default-features = false` when you only need the types (e.g., Cloudflare
-//!   Workers with a different database backend).
+//!   [`AdminLevel`], [`LocateMethod`]). Use this with `default-features = false`
+//!   when you only need the types (e.g., Cloudflare Workers with a different
+//!   database backend).
 //! - **`raw-sqlite`** — Exposes `Database::conn_guard()` for direct `rusqlite`
 //!   access. Using this accessor makes your code dependent on `rusqlite`'s API.
 
 #![deny(missing_docs)]
 
-/// Shared types and utilities for Indonesian village location data.
+/// Shared types for Indonesian village location data.
 ///
 /// This module is always available regardless of feature flags. It contains
-/// the core data types ([`Village`], [`Location`], [`AdminLevel`], etc.),
-/// the [`haversine_km`] distance function, and the [`location_from_village`]
-/// helper for building administrative hierarchies from village codes.
+/// the core data types ([`Village`], [`Location`], [`AdminLevel`], etc.) and
+/// the [`location_from_village`] helper for building administrative hierarchies
+/// from village codes.
 pub mod types;
 
-/// Point-in-polygon algorithms and vertex serialization.
+/// Geographic computations: distance, point-in-polygon, and vertex serialization.
 ///
-/// Contains [`PipResult`], [`point_in_ring`], [`point_in_polygon`],
+/// Contains [`haversine_km`], [`PipResult`], [`point_in_ring`], [`point_in_polygon`],
 /// [`bbox`], [`serialize_vertices`], and [`deserialize_vertices`].
-/// These are also re-exported from [`types`] for backward compatibility.
 pub mod geometry;
 
 #[cfg(feature = "db")]
@@ -69,10 +68,14 @@ mod db;
 #[cfg(feature = "build-db")]
 pub mod builder;
 
+pub use geometry::{
+    bbox, deserialize_vertices, haversine_km, point_in_polygon, point_in_ring, serialize_vertices,
+    PipResult, EARTH_RADIUS_KM,
+};
+
 pub use types::{
-    bbox, deserialize_vertices, haversine_km, location_from_village, point_in_polygon,
-    point_in_ring, serialize_vertices, AdminLevel, DataInfo, LocateMethod, Location, LookupResult,
-    PipResult, PrefixResult, Village, CODE_PREFIX_MAX_LIMIT, NEAREST_MAX_LIMIT, SEARCH_MAX_LIMIT,
+    location_from_village, AdminLevel, DataInfo, LocateMethod, Location, LookupResult,
+    PrefixResult, Village, CODE_PREFIX_MAX_LIMIT, NEAREST_MAX_LIMIT, SEARCH_MAX_LIMIT,
 };
 
 #[cfg(feature = "build-db")]

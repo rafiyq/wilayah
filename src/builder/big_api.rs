@@ -1,6 +1,7 @@
 //! BIG ArcGIS API fetching and village data extraction.
 
-use super::geometry;
+use super::spatial;
+use super::util;
 use super::PipelineError;
 use super::PipelineResultExt;
 use std::fs;
@@ -64,7 +65,7 @@ fn load_big_cache(
             r.get("lon").and_then(|v| v.as_f64()),
         ) {
             let rings = if include_polygons {
-                parse_rings_from_json(&r)
+                spatial::extract_rings(&r)
             } else {
                 None
             };
@@ -82,24 +83,6 @@ fn load_big_cache(
     }
     eprintln!("Loaded {} BIG village records from cache", result.len());
     Ok(result)
-}
-
-fn parse_rings_from_json(r: &serde_json::Value) -> Option<Vec<Vec<[f64; 2]>>> {
-    r.get("rings").and_then(|v| v.as_array()).map(|arr| {
-        arr.iter()
-            .filter_map(|ring_val| {
-                ring_val.as_array().map(|ring| {
-                    ring.iter()
-                        .filter_map(|pt| {
-                            let lon = pt.get(0)?.as_f64()?;
-                            let lat = pt.get(1)?.as_f64()?;
-                            Some([lat, lon])
-                        })
-                        .collect::<Vec<[f64; 2]>>()
-                })
-            })
-            .collect::<Vec<Vec<[f64; 2]>>>()
-    })
 }
 
 fn fetch_big_from_api(
@@ -129,7 +112,7 @@ fn fetch_big_from_api(
             eprintln!("Fetching BIG batch {} (offset={})...", batch_num, offset);
         }
 
-        let resp = fetch_with_retry(&url, 3)?;
+        let resp = util::fetch_with_retry(&url, 3)?;
         let json: serde_json::Value =
             serde_json::from_str(&resp).ctx("failed to parse BIG API response")?;
 
@@ -159,9 +142,9 @@ fn fetch_big_from_api(
             if let (Some(code), Some(name)) = (code, name) {
                 let geometry = feature.get("geometry");
                 let (lat, lon, rings) = if let Some(geom) = geometry {
-                    let (centroid_lat, centroid_lon) = geometry::compute_centroid(geom);
+                    let (centroid_lat, centroid_lon) = spatial::compute_centroid(geom);
                     let extracted_rings = if include_polygons {
-                        geometry::extract_rings(geom)
+                        spatial::extract_rings(geom)
                     } else {
                         None
                     };
@@ -228,52 +211,4 @@ fn save_big_cache(
     fs::write(cache_path, cache_json).ctx("failed to write BIG cache")?;
     eprintln!("Saved BIG cache to {:?}", cache_path);
     Ok(())
-}
-
-/// Fetch a URL with exponential-backoff retries, returning raw bytes.
-pub(crate) fn fetch_url_with_retry(
-    url: &str,
-    max_retries: usize,
-    timeout_secs: u64,
-    label: &str,
-) -> Result<Vec<u8>, PipelineError> {
-    let mut last_err = String::new();
-    for attempt in 0..=max_retries {
-        match ureq::get(url)
-            .timeout(std::time::Duration::from_secs(timeout_secs))
-            .call()
-        {
-            Ok(resp) => {
-                let mut data = Vec::new();
-                resp.into_reader()
-                    .read_to_end(&mut data)
-                    .ctx("failed to read response")?;
-                return Ok(data);
-            }
-            Err(e) => {
-                last_err = format!("{}", e);
-                if attempt < max_retries {
-                    let wait_secs = 2_u64.pow(attempt as u32);
-                    eprintln!(
-                        "{} attempt {} failed, retrying in {}s: {}",
-                        label,
-                        attempt + 1,
-                        wait_secs,
-                        last_err
-                    );
-                    std::thread::sleep(std::time::Duration::from_secs(wait_secs));
-                }
-            }
-        }
-    }
-    Err(PipelineError::new(format!(
-        "{} failed after {} retries: {}",
-        label, max_retries, last_err
-    )))
-}
-
-/// Fetch a URL with retries, returning a UTF-8 string.
-pub(crate) fn fetch_with_retry(url: &str, max_retries: usize) -> Result<String, PipelineError> {
-    let data = fetch_url_with_retry(url, max_retries, 60, "BIG API")?;
-    String::from_utf8(data).ctx("BIG API response is not valid UTF-8")
 }

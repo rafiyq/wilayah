@@ -26,9 +26,10 @@
 
 mod big_api;
 mod db_create;
-mod geometry;
 mod parse;
 mod pdf;
+mod spatial;
+mod util;
 
 pub use parse::ParseOutputDetail;
 
