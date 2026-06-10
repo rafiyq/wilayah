@@ -32,7 +32,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: data/locations.db
-          key: ${{ runner.os }}-db-${{ hashFiles('src/builder.rs', 'src/db.rs', 'Cargo.toml') }}
+          key: ${{ runner.os }}-db-${{ hashFiles('src/builder/mod.rs', 'src/db.rs', 'Cargo.toml') }}
 
       - name: Check formatting
         run: cargo fmt --check --all
@@ -40,5 +40,7 @@ jobs:
         run: cargo clippy --features raw-sqlite -- -D warnings
       - name: Run tests
         run: cargo test --features raw-sqlite
+      - name: Run build-db tests
+        run: cargo test --features build-db
       - name: Check build-db example
         run: cargo check --example build_db --features build-db

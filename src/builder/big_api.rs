@@ -21,11 +21,11 @@ pub(crate) struct BigRecord {
     pub(crate) rings: Option<Vec<Vec<[f64; 2]>>>,
 }
 
-pub(crate) fn json_str(v: &serde_json::Value, key: &str) -> Option<String> {
+fn json_str(v: &serde_json::Value, key: &str) -> Option<String> {
     v.get(key).and_then(|v| v.as_str()).map(|s| s.to_string())
 }
 
-pub(crate) fn json_str_or(v: &serde_json::Value, key: &str) -> String {
+fn json_str_or(v: &serde_json::Value, key: &str) -> String {
     v.get(key)
         .and_then(|v| v.as_str())
         .unwrap_or("")
@@ -39,7 +39,12 @@ pub(crate) fn fetch_big_data(
     force_refresh: bool,
     include_polygons: bool,
 ) -> Result<Vec<BigRecord>, PipelineError> {
-    let cache_path = cache_dir.join("big_villages.json");
+    let cache_filename = if include_polygons {
+        "big_villages_with_polygons.json"
+    } else {
+        "big_villages.json"
+    };
+    let cache_path = cache_dir.join(cache_filename);
 
     if !force_refresh && cache_path.exists() {
         return load_big_cache(&cache_path, include_polygons);

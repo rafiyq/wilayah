@@ -485,12 +485,22 @@ pub(crate) fn save_parsed_villages(
 mod tests {
     use super::*;
     use regex::Regex;
+    use std::sync::OnceLock;
+
+    fn name_re() -> &'static Regex {
+        static RE: OnceLock<Regex> = OnceLock::new();
+        RE.get_or_init(|| Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap())
+    }
+
+    fn section_header_re() -> &'static Regex {
+        static RE: OnceLock<Regex> = OnceLock::new();
+        RE.get_or_init(|| Regex::new(r"C\.\w+\.\d+\)\s+(.+)$").unwrap())
+    }
 
     #[test]
     fn test_parse_section_header_with_city_and_province() {
-        let re = Regex::new(r"C\.\w+\.\d+\)\s+(.+)$").unwrap();
         let line = "C.Kabupaten.1) Kabupaten Bogor Provinsi Jawa Barat";
-        let header = parse_section_header(line, &re);
+        let header = parse_section_header(line, section_header_re());
         assert!(header.is_some());
         let h = header.unwrap();
         assert_eq!(h.province, "Provinsi Jawa Barat");
@@ -499,9 +509,8 @@ mod tests {
 
     #[test]
     fn test_parse_section_header_province_only() {
-        let re = Regex::new(r"C\.\w+\.\d+\)\s+(.+)$").unwrap();
         let line = "C.Provinsi.1) Provinsi DKI Jakarta";
-        let header = parse_section_header(line, &re);
+        let header = parse_section_header(line, section_header_re());
         assert!(header.is_some());
         let h = header.unwrap();
         assert_eq!(h.province, "Provinsi DKI Jakarta");
@@ -510,30 +519,27 @@ mod tests {
 
     #[test]
     fn test_parse_section_header_no_provinsi() {
-        let re = Regex::new(r"C\.\w+\.\d+\)\s+(.+)$").unwrap();
         let line = "C.Kabupaten.1) Some text without Provinsi";
-        assert!(parse_section_header(line, &re).is_none());
+        assert!(parse_section_header(line, section_header_re()).is_none());
     }
 
     #[test]
     fn test_parse_section_header_no_match() {
-        let re = Regex::new(r"C\.\w+\.\d+\)\s+(.+)$").unwrap();
         let line = "31.12.24.2002 ABADMULIA KEC. BUKIT SARI";
-        assert!(parse_section_header(line, &re).is_none());
+        assert!(parse_section_header(line, section_header_re()).is_none());
     }
 
     #[test]
     fn test_parse_section_header_rejects_invalid_format() {
-        let re = Regex::new(r"C\.\w+\.\d+\)\s+(.+)$").unwrap();
         let line = "C.Kabupaten.X) Kabupaten Bogor Provinsi Jawa Barat";
-        assert!(parse_section_header(line, &re).is_none());
+        assert!(parse_section_header(line, section_header_re()).is_none());
     }
 
     #[test]
     fn test_extract_village_name_basic() {
-        let name_re = Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap();
+        let name_re = name_re();
         let after_code = " 12 ABADIJAYA";
-        let name = extract_village_name(after_code, &name_re);
+        let name = extract_village_name(after_code, name_re);
         assert_eq!(
             name.as_ref().map(|e| &e.name),
             Some(&"ABADIJAYA".to_string())
@@ -542,9 +548,9 @@ mod tests {
 
     #[test]
     fn test_extract_village_name_multi_word() {
-        let name_re = Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap();
+        let name_re = name_re();
         let after_code = " 12 SUKA MAJU";
-        let name = extract_village_name(after_code, &name_re);
+        let name = extract_village_name(after_code, name_re);
         assert_eq!(
             name.as_ref().map(|e| &e.name),
             Some(&"SUKA MAJU".to_string())
@@ -553,9 +559,9 @@ mod tests {
 
     #[test]
     fn test_extract_village_name_keyword_stripping() {
-        let name_re = Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap();
+        let name_re = name_re();
         let after_code = " 15 SUKAMAJU KEMENANGAN Pemekaran menjadi SUKAMAJU";
-        let name = extract_village_name(after_code, &name_re);
+        let name = extract_village_name(after_code, name_re);
         assert_eq!(
             name.as_ref().map(|e| &e.name),
             Some(&"SUKAMAJU KEMENANGAN".to_string())
@@ -564,25 +570,25 @@ mod tests {
 
     #[test]
     fn test_extract_village_name_numeric_start() {
-        let name_re = Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap();
+        let name_re = name_re();
         let after_code = " 20 5SAFARI Some text";
-        let name = extract_village_name(after_code, &name_re);
+        let name = extract_village_name(after_code, name_re);
         assert!(name.is_none());
     }
 
     #[test]
     fn test_extract_village_name_empty() {
-        let name_re = Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap();
+        let name_re = name_re();
         let after_code = " 30 ";
-        let name = extract_village_name(after_code, &name_re);
+        let name = extract_village_name(after_code, name_re);
         assert!(name.is_none());
     }
 
     #[test]
     fn test_extract_village_name_truncate_to_five_words() {
-        let name_re = Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap();
+        let name_re = name_re();
         let after_code = " 10 DESA SUKAMAJU KECAMATAN BUKIT SARI LAINNYA";
-        let name = extract_village_name(after_code, &name_re);
+        let name = extract_village_name(after_code, name_re);
         assert_eq!(
             name.as_ref().map(|e| &e.name),
             Some(&"DESA SUKAMAJU KECAMATAN BUKIT SARI".to_string())
@@ -591,9 +597,9 @@ mod tests {
 
     #[test]
     fn test_extract_village_name_six_words_truncated() {
-        let name_re = Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap();
+        let name_re = name_re();
         let after_code = " 10 A B C D E F";
-        let name = extract_village_name(after_code, &name_re);
+        let name = extract_village_name(after_code, name_re);
         assert_eq!(
             name.as_ref().map(|e| &e.name),
             Some(&"A B C D E".to_string())
@@ -602,17 +608,17 @@ mod tests {
 
     #[test]
     fn test_extract_village_name_semula() {
-        let name_re = Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap();
+        let name_re = name_re();
         let after_code = " 2 RAMBONG Semula wil Kec. Bakongan Perda No. 3/2010";
-        let name = extract_village_name(after_code, &name_re);
+        let name = extract_village_name(after_code, name_re);
         assert_eq!(name.as_ref().map(|e| &e.name), Some(&"RAMBONG".to_string()));
     }
 
     #[test]
     fn test_extract_village_name_qanun() {
-        let name_re = Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap();
+        let name_re = name_re();
         let after_code = " 23 PIRAK TIMU Qanun No. 32/2005";
-        let name = extract_village_name(after_code, &name_re);
+        let name = extract_village_name(after_code, name_re);
         assert_eq!(
             name.as_ref().map(|e| &e.name),
             Some(&"PIRAK TIMU".to_string())
@@ -621,9 +627,9 @@ mod tests {
 
     #[test]
     fn test_extract_village_name_uu_with_reference() {
-        let name_re = Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap();
+        let name_re = name_re();
         let after_code = " 5 SUKAMAKMUR UU No. 4/2002";
-        let name = extract_village_name(after_code, &name_re);
+        let name = extract_village_name(after_code, name_re);
         assert_eq!(
             name.as_ref().map(|e| &e.name),
             Some(&"SUKAMAKMUR".to_string())
@@ -632,17 +638,17 @@ mod tests {
 
     #[test]
     fn test_extract_village_name_uu_without_reference_not_stripped() {
-        let name_re = Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap();
+        let name_re = name_re();
         let after_code = " 5 UU JAYA";
-        let name = extract_village_name(after_code, &name_re);
+        let name = extract_village_name(after_code, name_re);
         assert_eq!(name.as_ref().map(|e| &e.name), Some(&"UU JAYA".to_string()));
     }
 
     #[test]
     fn test_extract_village_name_hasil_in_name_not_stripped() {
-        let name_re = Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap();
+        let name_re = name_re();
         let after_code = " 18 HASIL JAYA";
-        let name = extract_village_name(after_code, &name_re);
+        let name = extract_village_name(after_code, name_re);
         assert_eq!(
             name.as_ref().map(|e| &e.name),
             Some(&"HASIL JAYA".to_string())
@@ -651,9 +657,9 @@ mod tests {
 
     #[test]
     fn test_extract_village_name_hal_hasil_with_reference() {
-        let name_re = Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap();
+        let name_re = name_re();
         let after_code = " 18 LIYA BAHARI Hal Hasil Klarifikasi Nama Desa";
-        let name = extract_village_name(after_code, &name_re);
+        let name = extract_village_name(after_code, name_re);
         assert_eq!(
             name.as_ref().map(|e| &e.name),
             Some(&"LIYA BAHARI".to_string())
@@ -662,17 +668,17 @@ mod tests {
 
     #[test]
     fn test_extract_village_name_amar_with_reference() {
-        let name_re = Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap();
+        let name_re = name_re();
         let after_code = " 12 MERDEKA Amar Putusan Mahkamah Agung RI Nomor 395K";
-        let name = extract_village_name(after_code, &name_re);
+        let name = extract_village_name(after_code, name_re);
         assert_eq!(name.as_ref().map(|e| &e.name), Some(&"MERDEKA".to_string()));
     }
 
     #[test]
     fn test_extract_village_name_perda_with_number() {
-        let name_re = Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap();
+        let name_re = name_re();
         let after_code = " 9 LEUBOK PASI Perda No. 3/2010 tentang pemekaran";
-        let name = extract_village_name(after_code, &name_re);
+        let name = extract_village_name(after_code, name_re);
         assert_eq!(
             name.as_ref().map(|e| &e.name),
             Some(&"LEUBOK PASI".to_string())
@@ -681,9 +687,9 @@ mod tests {
 
     #[test]
     fn test_extract_village_name_five_word_name_preserved() {
-        let name_re = Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap();
+        let name_re = name_re();
         let after_code = " 7 TANAH SIRAH PIAI NAN XX";
-        let name = extract_village_name(after_code, &name_re);
+        let name = extract_village_name(after_code, name_re);
         assert_eq!(
             name.as_ref().map(|e| &e.name),
             Some(&"TANAH SIRAH PIAI NAN XX".to_string())
@@ -692,9 +698,9 @@ mod tests {
 
     #[test]
     fn test_extract_village_name_perbaikan_with_nama() {
-        let name_re = Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap();
+        let name_re = name_re();
         let after_code = " 2 UJONG MANGKI Perbaikan nama sesuai Surat Pemkab";
-        let name = extract_village_name(after_code, &name_re);
+        let name = extract_village_name(after_code, name_re);
         assert_eq!(
             name.as_ref().map(|e| &e.name),
             Some(&"UJONG MANGKI".to_string())
@@ -703,9 +709,9 @@ mod tests {
 
     #[test]
     fn test_extract_village_name_nd_with_reference() {
-        let name_re = Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap();
+        let name_re = name_re();
         let after_code = " 5 SUKAJADI ND Rekom No 140/4495/BPD";
-        let name = extract_village_name(after_code, &name_re);
+        let name = extract_village_name(after_code, name_re);
         assert_eq!(
             name.as_ref().map(|e| &e.name),
             Some(&"SUKAJADI".to_string())
@@ -841,9 +847,9 @@ C.K.1) Kabupaten Bandung Provinsi Jawa Barat
 
     #[test]
     fn test_village_code_at_end_of_line() {
-        let name_re = Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap();
+        let name_re = name_re();
         let after_code = " 5 CIPAGARANTU";
-        let name = extract_village_name(after_code, &name_re);
+        let name = extract_village_name(after_code, name_re);
         assert_eq!(
             name.as_ref().map(|e| &e.name),
             Some(&"CIPAGARANTU".to_string())
@@ -852,9 +858,9 @@ C.K.1) Kabupaten Bandung Provinsi Jawa Barat
 
     #[test]
     fn test_extracted_name_metadata_with_note() {
-        let name_re = Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap();
+        let name_re = name_re();
         let after_code = " 2 RAMBONG Semula wil Kec. Bakongan";
-        let extracted = extract_village_name(after_code, &name_re).unwrap();
+        let extracted = extract_village_name(after_code, name_re).unwrap();
         assert_eq!(extracted.name, "RAMBONG");
         assert_eq!(
             extracted.raw_name.as_deref(),
@@ -866,9 +872,9 @@ C.K.1) Kabupaten Bandung Provinsi Jawa Barat
 
     #[test]
     fn test_extracted_name_metadata_no_note() {
-        let name_re = Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap();
+        let name_re = name_re();
         let after_code = " 12 ABADIJAYA";
-        let extracted = extract_village_name(after_code, &name_re).unwrap();
+        let extracted = extract_village_name(after_code, name_re).unwrap();
         assert_eq!(extracted.name, "ABADIJAYA");
         assert!(extracted.raw_name.is_none());
         assert!(extracted.note_keyword.is_none());
@@ -877,9 +883,9 @@ C.K.1) Kabupaten Bandung Provinsi Jawa Barat
 
     #[test]
     fn test_extracted_name_raw_name_from_truncation() {
-        let name_re = Regex::new(r"\s+\d{1,3}\s+(.{1,120})").unwrap();
+        let name_re = name_re();
         let after_code = " 10 A B C D E F";
-        let extracted = extract_village_name(after_code, &name_re).unwrap();
+        let extracted = extract_village_name(after_code, name_re).unwrap();
         assert_eq!(extracted.name, "A B C D E");
         assert_eq!(extracted.raw_name.as_deref(), Some("A B C D E F"));
         assert!(extracted.note_keyword.is_none());

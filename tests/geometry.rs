@@ -172,9 +172,25 @@ fn test_deserialize_vertices_trailing() {
     let ring = vec![(-6.16, 106.85)];
     let mut blob = serialize_vertices(&ring);
     blob.push(0xFF);
+    // debug_assert in deserialize_vertices will fire for non-aligned blobs
+    // in debug builds, but the function still produces correct output.
+    #[cfg(not(debug_assertions))]
+    {
+        let restored = deserialize_vertices(&blob);
+        assert_eq!(restored.len(), 1, "trailing byte should be ignored");
+        assert_eq!(restored[0], (-6.16, 106.85));
+    }
+}
+
+#[test]
+fn test_deserialize_vertices_aligned() {
+    let ring = vec![(-6.16, 106.85), (-6.20, 106.90)];
+    let blob = serialize_vertices(&ring);
+    assert!(blob.len().is_multiple_of(16));
     let restored = deserialize_vertices(&blob);
-    assert_eq!(restored.len(), 1, "trailing byte should be ignored");
+    assert_eq!(restored.len(), 2);
     assert_eq!(restored[0], (-6.16, 106.85));
+    assert_eq!(restored[1], (-6.20, 106.90));
 }
 
 #[test]

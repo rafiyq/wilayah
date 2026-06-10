@@ -3,7 +3,7 @@ use wilayah::{version, AdminLevel, Database};
 
 #[test]
 fn test_version() {
-    assert_eq!(version(), "0.5.1");
+    assert_eq!(version(), env!("CARGO_PKG_VERSION"));
 }
 
 #[test]

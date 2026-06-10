@@ -54,9 +54,9 @@ jobs:
         tag_name: ${{ github.ref_name }}
         name: ${{ github.ref_name }}
         body_path: release_notes.md
-        files: |
-          data/locations.db
-          data/locations-poly.db
-          data/cache/parsed_villages.json
-          data/cache/big_villages.json
+      files: |
+        data/locations.db
+        data/locations-poly.db
+        data/cache/parsed_villages.json
+        data/cache/big_villages_with_polygons.json
         generate_release_notes: false

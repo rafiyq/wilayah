@@ -37,12 +37,16 @@
 //! # Feature flags
 //!
 //! - **`db`** *(enabled by default)* — Embedded SQLite database via `rusqlite`.
-//!   Enables [`Database`], [`Error`], and all query methods.
+//!   Enables [`Database`], [`Error`], and all query methods. Implies `serde`.
 //! - **`build-db`** — Pipeline for building the database from source data.
+//!   Implies `db`.
+//! - **`serde`** — Enables `Serialize` implementations on all public types.
+//!   Automatically enabled by `db`. Use this with `default-features = false`
+//!   when you only need serializable types without the embedded database
+//!   (e.g., Cloudflare Workers with a different database backend).
 //! - **`types`** — *(always available)* Shared types ([`Village`], [`Location`],
 //!   [`AdminLevel`], [`LocateMethod`]). Use this with `default-features = false`
-//!   when you only need the types (e.g., Cloudflare Workers with a different
-//!   database backend).
+//!   when you only need the types.
 //! - **`raw-sqlite`** — Exposes `Database::conn_guard()` for direct `rusqlite`
 //!   access. Using this accessor makes your code dependent on `rusqlite`'s API.
 
@@ -96,6 +100,8 @@ pub const fn version() -> &'static str {
 /// Returns source, decree, village count, and build timestamp information
 /// stored in the `db_meta` table of the embedded database. The result is
 /// cached after the first call.
+///
+/// *This function is only available with the `db` feature flag (enabled by default).*
 ///
 /// # Example
 ///

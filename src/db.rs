@@ -39,6 +39,7 @@ impl From<rusqlite::Error> for Error {
     }
 }
 
+#[cfg(feature = "serde")]
 impl serde::Serialize for Error {
     fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
         s.serialize_str(&self.to_string())
@@ -182,7 +183,12 @@ impl Database {
     /// # Ok::<_, wilayah::Error>(())
     /// ```
     pub fn find_nearest(&self, lat: f64, lon: f64, limit: usize) -> Result<Vec<Village>> {
-        nearest(&self.conn.lock().unwrap(), lat, lon, limit)
+        nearest(
+            &self.conn.lock().unwrap_or_else(|e| e.into_inner()),
+            lat,
+            lon,
+            limit,
+        )
     }
 
     /// Search for villages by name.
@@ -210,7 +216,11 @@ impl Database {
     /// # Ok::<_, wilayah::Error>(())
     /// ```
     pub fn find_by_name(&self, query: &str, limit: usize) -> Result<Vec<Village>> {
-        search(&self.conn.lock().unwrap(), query, limit)
+        search(
+            &self.conn.lock().unwrap_or_else(|e| e.into_inner()),
+            query,
+            limit,
+        )
     }
 
     /// Search for a unique village by name.
@@ -234,7 +244,7 @@ impl Database {
     /// # Ok::<_, wilayah::Error>(())
     /// ```
     pub fn find_by_name_unique(&self, query: &str) -> Result<LookupResult> {
-        search_unique(&self.conn.lock().unwrap(), query)
+        search_unique(&self.conn.lock().unwrap_or_else(|e| e.into_inner()), query)
     }
 
     /// Find a village by its BMKG-compatible administrative code.
@@ -250,7 +260,7 @@ impl Database {
     /// # Ok::<_, wilayah::Error>(())
     /// ```
     pub fn find_by_code(&self, code: &str) -> Result<Option<Village>> {
-        by_code(&self.conn.lock().unwrap(), code)
+        by_code(&self.conn.lock().unwrap_or_else(|e| e.into_inner()), code)
     }
 
     /// Find all villages matching an administrative code prefix with pagination.
@@ -279,7 +289,12 @@ impl Database {
         limit: usize,
         offset: usize,
     ) -> Result<PrefixResult> {
-        by_code_prefix(&self.conn.lock().unwrap(), prefix, limit, offset)
+        by_code_prefix(
+            &self.conn.lock().unwrap_or_else(|e| e.into_inner()),
+            prefix,
+            limit,
+            offset,
+        )
     }
 
     /// Reverse-geocode a lat/lon to the full administrative hierarchy.
@@ -306,7 +321,7 @@ impl Database {
     pub fn locate(&self, lat: f64, lon: f64) -> Result<Option<Location>> {
         if let Some(poly_conn) = &self.poly_conn {
             let candidates = {
-                let poly = poly_conn.lock().unwrap();
+                let poly = poly_conn.lock().unwrap_or_else(|e| e.into_inner());
                 query_polygon_candidates(&poly, lat, lon)?
             };
             for (village_id, rings) in &candidates {
@@ -323,7 +338,7 @@ impl Database {
 
                 for exterior in &exteriors {
                     if point_in_polygon(lat, lon, exterior, &interiors) {
-                        let conn = self.conn.lock().unwrap();
+                        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
                         let village = by_id(&conn, *village_id)?;
                         let Some(village) = village else {
                             continue;
@@ -337,9 +352,17 @@ impl Database {
                     }
                 }
             }
-            return locate_nearest(&self.conn.lock().unwrap(), lat, lon);
+            return locate_nearest(
+                &self.conn.lock().unwrap_or_else(|e| e.into_inner()),
+                lat,
+                lon,
+            );
         }
-        locate_nearest(&self.conn.lock().unwrap(), lat, lon)
+        locate_nearest(
+            &self.conn.lock().unwrap_or_else(|e| e.into_inner()),
+            lat,
+            lon,
+        )
     }
 
     /// Get metadata about the embedded location database.
@@ -348,7 +371,7 @@ impl Database {
     /// village count. Returns default values if the table is missing
     /// or keys are absent.
     pub fn data_info(&self) -> DataInfo {
-        data_info_from_conn(&self.conn.lock().unwrap())
+        data_info_from_conn(&self.conn.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
     /// Get the total number of villages in the database.
@@ -362,12 +385,12 @@ impl Database {
     /// # Ok::<_, wilayah::Error>(())
     /// ```
     pub fn village_count(&self) -> Result<u32> {
-        let count: i64 =
-            self.conn
-                .lock()
-                .unwrap()
-                .query_row("SELECT COUNT(*) FROM locations", [], |row| row.get(0))?;
-        Ok(count as u32)
+        let count: i64 = self
+            .conn
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .query_row("SELECT COUNT(*) FROM locations", [], |row| row.get(0))?;
+        Ok(u32::try_from(count).expect("village count exceeds u32 range"))
     }
 }
 
@@ -388,7 +411,7 @@ impl Database {
     ///
     /// See the [feature flag documentation](#feature-flags) for caveats.
     pub fn conn_guard(&self) -> MutexGuard<'_, Connection> {
-        self.conn.lock().unwrap()
+        self.conn.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 

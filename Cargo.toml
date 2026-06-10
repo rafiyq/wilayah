@@ -11,7 +11,7 @@ categories = ["science::geo", "database"]
 readme = "README.md"
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive"], optional = true }
 
 rusqlite = { version = "0.39", features = ["functions", "serialize", "bundled"], optional = true }
 
@@ -36,7 +36,8 @@ regex = "1"
 
 [features]
 default = ["db"]
-db = ["dep:rusqlite"]
+serde = ["dep:serde"]
+db = ["dep:rusqlite", "serde"]
 build-db = ["db", "ureq", "regex", "serde_json", "sha2"]
 raw-sqlite = ["db"]
 

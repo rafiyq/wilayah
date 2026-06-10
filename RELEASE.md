@@ -31,7 +31,7 @@ The repository includes a GitHub Actions workflow that automates the entire rele
      - `locations.db` — main SQLite database (~27 MB)
      - `locations-poly.db` — polygon boundary database (for containment-based locate)
      - `parsed_villages.json` — PDF parser output with raw names (for auditing)
-     - `big_villages.json` — BIG ArcGIS API cache (avoids re-fetching 84+ batches)
+     - `big_villages_with_polygons.json` — BIG ArcGIS API cache with polygon data (avoids re-fetching 84+ batches)
 
 ### Required secrets
 
@@ -95,14 +95,14 @@ gh release upload "v<version>" \
   data/locations.db \
   data/locations-poly.db \
   data/cache/parsed_villages.json \
-  data/cache/big_villages.json
+  data/cache/big_villages_with_polygons.json
 ```
 
 The release assets are:
 - `locations.db` — main SQLite database (downloaded by `build.rs` for downstream users)
 - `locations-poly.db` — polygon boundary database (opt-in, for `LocateMethod::Contained`)
 - `parsed_villages.json` — PDF parser output with raw village names (for auditing)
-- `big_villages.json` — BIG ArcGIS API cache (avoids re-fetching 84+ API batches)
+- `big_villages_with_polygons.json` — BIG ArcGIS API cache with polygon data (avoids re-fetching 84+ API batches)
 
 ## Post-release
 
@@ -112,7 +112,7 @@ The build script (`build.rs`) will automatically download the database from the 
 
 Follow semantic versioning. The public API is:
 
-- `wilayah::open()` — stable
+- `wilayah::Database::open()` — stable
 - `wilayah::find_nearest()` — stable
 - `wilayah::find_by_name()` — stable
 - `wilayah::find_by_name_unique()` — stable
@@ -127,7 +127,6 @@ Follow semantic versioning. The public API is:
 - `wilayah::LookupResult` — stable
 - `wilayah::DataInfo` — stable (fields changed to `String` in 0.4.0, breaking)
 - `wilayah::data_info()` — stable
-- `wilayah::data_info_from_conn()` — stable (since 0.4.0)
 - `wilayah::village_count()` — stable
 - `wilayah::version()` — stable
 

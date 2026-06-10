@@ -138,6 +138,11 @@ pub fn serialize_vertices(ring: &[(f64, f64)]) -> Vec<u8> {
 ///
 /// Each vertex is 16 bytes: `[lat, lon]`. The number of vertices is `blob.len() / 16`.
 pub fn deserialize_vertices(blob: &[u8]) -> Vec<(f64, f64)> {
+    debug_assert!(
+        blob.len().is_multiple_of(16),
+        "deserialize_vertices: blob length {} is not a multiple of 16",
+        blob.len()
+    );
     let n = blob.len() / 16;
     let mut ring = Vec::with_capacity(n);
     for i in 0..n {

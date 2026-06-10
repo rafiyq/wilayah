@@ -7,6 +7,10 @@ fn main() {
     let mut pipeline = Pipeline::new();
     let mut save_legacy_snapshot = false;
 
+    if std::env::var("WILAYAH_REFRESH_BIG").as_deref() == Ok("1") {
+        pipeline = pipeline.force_refresh_big(true);
+    }
+
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {

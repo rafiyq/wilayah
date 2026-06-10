@@ -1,4 +1,5 @@
 use core::fmt;
+#[cfg(feature = "serde")]
 use serde::Serialize;
 
 /// Maximum number of results returned by [`Database::find_nearest`](crate::Database::find_nearest).
@@ -20,7 +21,8 @@ pub const CODE_PREFIX_MAX_LIMIT: usize = 1000;
 /// Metadata is read from the `db_meta` table embedded in the database itself,
 /// so it is always correct regardless of how the binary was built (pipeline mode
 /// or download mode).
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct DataInfo {
     /// The upstream data source (e.g., `"official"` or `"release"`).
     pub source: String,
@@ -34,7 +36,8 @@ pub struct DataInfo {
 }
 
 /// A village record with administrative hierarchy and coordinates.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct Village {
     /// BMKG-compatible administrative code (e.g., `31.71.03.1001`)
     pub code: String,
@@ -52,7 +55,7 @@ pub struct Village {
     pub lon: f64,
     /// Distance from query point in kilometers.
     /// Only set by `find_nearest()`, always `None` from `find_by_name()`.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub dist_km: Option<f64>,
 }
 
@@ -67,7 +70,8 @@ impl fmt::Display for Village {
 }
 
 /// Method used to determine the administrative location.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
 pub enum LocateMethod {
     /// Matched by nearest village centroid (Haversine distance).
     Nearest,
@@ -86,7 +90,8 @@ impl fmt::Display for LocateMethod {
 }
 
 /// A single level of the administrative hierarchy with code and name.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct AdminLevel {
     /// Administrative code for this level (e.g., `"31"`, `"31.71"`, `"31.71.03"`).
     pub code: String,
@@ -101,7 +106,8 @@ impl fmt::Display for AdminLevel {
 }
 
 /// Result of a reverse-geocode lookup showing the full administrative hierarchy.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct Location {
     /// Province level (code + name).
     pub province: AdminLevel,
@@ -179,7 +185,8 @@ pub fn location_from_village(v: &Village, dist_km: f64, method: LocateMethod) ->
 ///     LookupResult::NotFound => eprintln!("{result}"),
 /// }
 /// ```
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
 pub enum LookupResult {
     /// Exactly one match
     Found(Village),
@@ -209,7 +216,8 @@ impl fmt::Display for LookupResult {
 }
 
 /// Paginated result from a code prefix lookup.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct PrefixResult {
     /// The villages in this page of results.
     pub villages: Vec<Village>,
