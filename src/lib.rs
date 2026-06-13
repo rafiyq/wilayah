@@ -60,10 +60,9 @@
 /// from village codes.
 pub mod types;
 
-/// Geographic computations: distance, point-in-polygon, and vertex serialization.
+/// Geographic computations: distance and point-in-polygon.
 ///
-/// Contains [`haversine_km`], [`PipResult`], [`point_in_ring`], [`point_in_polygon`],
-/// [`bbox`], [`serialize_vertices`], and [`deserialize_vertices`].
+/// Contains [`haversine_km`], [`PipResult`], [`point_in_ring`], and [`point_in_polygon`].
 pub mod geometry;
 
 #[cfg(feature = "db")]
@@ -72,10 +71,7 @@ mod db;
 #[cfg(feature = "build-db")]
 pub mod builder;
 
-pub use geometry::{
-    bbox, deserialize_vertices, haversine_km, point_in_polygon, point_in_ring, serialize_vertices,
-    PipResult, EARTH_RADIUS_KM,
-};
+pub use geometry::{haversine_km, point_in_polygon, point_in_ring, PipResult, EARTH_RADIUS_KM};
 
 pub use types::{
     location_from_village, AdminLevel, DataInfo, LocateMethod, Location, LookupResult,

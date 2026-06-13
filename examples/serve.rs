@@ -107,6 +107,11 @@ fn default_offset() -> usize {
     0
 }
 
+// NOTE: The response types below (IndexResponse, SearchResponse, CodeResponse,
+// CodePrefixResponse, LocateResponse, ErrorResponse) are duplicated in the
+// Cloudflare Worker example (examples/cloudflare-worker/src/lib.rs). Changes
+// to the API shape should be mirrored there.
+
 #[derive(Serialize)]
 struct IndexResponse {
     name: String,

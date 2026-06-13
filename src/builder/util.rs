@@ -61,6 +61,21 @@ pub(crate) fn hash_sha256(data: &[u8]) -> String {
 
 /// Compute the SHA-256 hash of a file, returned as lowercase hex.
 pub(crate) fn hash_file(path: &std::path::Path) -> Result<String, PipelineError> {
-    let data = std::fs::read(path).ctx("failed to read file for SHA-256")?;
-    Ok(hash_sha256(&data))
+    use sha2::Digest;
+    use std::io::Read;
+
+    let file = std::fs::File::open(path).ctx("failed to open file for SHA-256")?;
+    let mut reader = std::io::BufReader::new(file);
+    let mut hasher = sha2::Sha256::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = reader
+            .read(&mut buf)
+            .ctx("failed to read file for SHA-256")?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }

@@ -29,6 +29,11 @@ impl From<&VillageRow> for Village {
     }
 }
 
+// NOTE: The response types below (IndexResponse, NearestResponse, SearchResponse,
+// CodeResponse, CodePrefixResponse, LocateResponse, ErrorResponse) are duplicated
+// in the axum serve.rs example (examples/serve.rs). Changes to the API shape
+// should be mirrored there.
+
 #[derive(Serialize)]
 struct IndexResponse {
     name: String,

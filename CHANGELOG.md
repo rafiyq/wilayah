@@ -11,6 +11,15 @@ All notable changes to this project will be documented in this file.
 - test_deserialize_vertices_aligned test
 - builder/util.rs — shared utilities (fetch_url_with_retry, fetch_with_retry, hash_sha256, hash_file) extracted from pdf.rs and db_create.rs
 - tests/builder.rs — PipelineError unit tests with build-db feature gate (moved from tests/types.rs)
+- `#[non_exhaustive]` on Village, Location, DataInfo, LookupResult, PrefixResult, PipResult, and db::Error for forward-compatibility
+- `collect_rows()` helper in db/query.rs to reduce repeated row-collection boilerplate
+- `PipelineError::from_error()` private constructor to deduplicate From impls
+- `VILLAGE_COLS`/`VILLAGE_COLS_L` SQL column list constants with doc mapping Indonesian→English field names
+- `lock_conn()`/`lock_poly()` Mutex helpers on Database
+- `set_write_pragmas()` helper in db_create.rs for PRAGMA initialization
+- `locate_contained()` extracted into db/polygon.rs for polygon containment logic
+- `Default` impl on `DataInfo` (used by `cached_data_info()` fallback)
+- `tests/db_types.rs` — Database and Error integration tests (split from tests/types.rs)
 
 ### Changed
 
@@ -27,13 +36,32 @@ All notable changes to this project will be documented in this file.
 - Version test uses env!("CARGO_PKG_VERSION") instead of hardcoded "0.5.1"
 - data_info() doc comment now notes it requires the db feature flag
 - Test regex patterns compiled once via OnceLock helpers (was 22 duplicate compilations)
+- **BREAKING**: `parent_ring_id` column removed from village_polygons schema (was always NULL; affects existing polygon DBs at 0.x)
+- `bbox`, `serialize_vertices`, `deserialize_vertices` changed from `pub` to `pub(crate)` — no longer part of public API
+- `deserialize_vertices` now returns `Result<Vec<(f64, f64)>, String>` instead of panicking on misaligned blobs
+- src/db.rs split into src/db/ module directory (mod.rs, query.rs, polygon.rs, meta.rs)
+- 5 unit tests moved from tests/locate.rs to inline #[cfg(test)] in src/types.rs
+- `compute_centroid`, `extract_rings`, `polygon_centroid` moved from spatial.rs to big_api.rs (private)
+- `data_info()` / `cached_data_info()` no longer panics — returns defaults if DB open fails
+- geometry integration tests moved inline into src/geometry.rs (tests/geometry.rs removed)
+- SQL column references in db/query.rs use `VILLAGE_COLS`/`VILLAGE_COLS_L` constants instead of hardcoded strings
+- `village_from_row()` takes `dist_col: bool` parameter instead of separate row-mapping functions
+- `hash_file()` uses streaming SHA-256 (8 KiB chunks) instead of reading entire file into memory
+- Redundant `district_code.clone()` in parse.rs replaced with direct assignment
+- `compute_sha256` trivial wrapper removed — call sites use `util::hash_file()` directly
+- `OfficialVillage`/`LegacyVillage` in verify_legacy.rs deduplicated into single `VillageEntry` struct
+- Three `From` impls for `PipelineError` now use shared `from_error()` helper
+- `tests/types.rs` split: pure type tests remain, Database/Error tests moved to `tests/db_types.rs`
+- Poly schema duplication noted in tests/common/mod.rs with cross-reference to db_create.rs
+- Response type duplication noted in serve.rs and Cloudflare Worker with cross-references
+- Pipeline resummability limitation documented in Pipeline::run() doc comment
 
 ### Fixed
 
 - CI cache key referenced stale src/builder.rs (now src/builder/mod.rs)
 - RELEASE.md listed wilayah::open() (should be wilayah::Database::open()) and private data_info_from_conn() (removed)
 - README.md referenced src/builder.rs (should be src/builder/)
-- deserialize_vertices silently ignored misaligned blobs (now has debug_assert)
+- deserialize_vertices silently ignored misaligned blobs (now returns Err instead of debug_assert)
 - Doc list indentation warning in lib.rs
 
 ## 0.5.0 - 2026-06-08

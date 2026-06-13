@@ -1,6 +1,5 @@
 //! BIG ArcGIS API fetching and village data extraction.
 
-use super::spatial;
 use super::util;
 use super::PipelineError;
 use super::PipelineResultExt;
@@ -30,6 +29,116 @@ fn json_str_or(v: &serde_json::Value, key: &str) -> String {
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string()
+}
+
+fn compute_centroid(geometry: &serde_json::Value) -> (f64, f64) {
+    let mut rings: Vec<&[serde_json::Value]> = Vec::new();
+
+    if let Some(rings_array) = geometry.get("rings").and_then(|r| r.as_array()) {
+        for ring_val in rings_array {
+            if let Some(ring) = ring_val.as_array() {
+                rings.push(ring);
+            }
+        }
+    } else if let Some(coord_arrays) = geometry.get("coordinates").and_then(|c| c.as_array()) {
+        if let Some(first) = coord_arrays.first() {
+            if first.get(0).map(|r| r.is_array()).unwrap_or(false) {
+                for poly in coord_arrays {
+                    if let Some(poly_rings) = poly.as_array() {
+                        if let Some(outer) = poly_rings.first() {
+                            if let Some(outer_ring) = outer.as_array() {
+                                rings.push(outer_ring);
+                            }
+                        }
+                    }
+                }
+            } else {
+                rings.push(coord_arrays);
+            }
+        }
+    }
+
+    if rings.is_empty() {
+        return (0.0, 0.0);
+    }
+
+    let mut largest_ring = &rings[0];
+    let mut max_len = 0;
+    for ring in &rings {
+        if ring.len() > max_len {
+            max_len = ring.len();
+            largest_ring = ring;
+        }
+    }
+
+    polygon_centroid(largest_ring)
+}
+
+fn extract_rings(geometry: &serde_json::Value) -> Option<Vec<Vec<[f64; 2]>>> {
+    if let Some(rings_array) = geometry.get("rings").and_then(|r| r.as_array()) {
+        let result: Vec<Vec<[f64; 2]>> = rings_array
+            .iter()
+            .filter_map(|ring_val| {
+                ring_val.as_array().map(|ring| {
+                    ring.iter()
+                        .filter_map(|pt| {
+                            let lon = pt.get(0)?.as_f64()?;
+                            let lat = pt.get(1)?.as_f64()?;
+                            Some([lat, lon])
+                        })
+                        .collect::<Vec<[f64; 2]>>()
+                })
+            })
+            .collect();
+        if result.is_empty() {
+            None
+        } else {
+            Some(result)
+        }
+    } else {
+        None
+    }
+}
+
+fn polygon_centroid(ring: &[serde_json::Value]) -> (f64, f64) {
+    if ring.len() < 3 {
+        return (0.0, 0.0);
+    }
+
+    let mut area = 0.0_f64;
+    let mut cx = 0.0_f64;
+    let mut cy = 0.0_f64;
+    let n = ring.len();
+
+    for i in 0..n {
+        let j = (i + 1) % n;
+
+        let x_i = ring[i].get(0).and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let y_i = ring[i].get(1).and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let x_j = ring[j].get(0).and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let y_j = ring[j].get(1).and_then(|v| v.as_f64()).unwrap_or(0.0);
+
+        let cross = x_i * y_j - x_j * y_i;
+        area += cross;
+        cx += (x_i + x_j) * cross;
+        cy += (y_i + y_j) * cross;
+    }
+
+    area *= 0.5;
+    if area.abs() < 1e-10 {
+        let mut sx = 0.0_f64;
+        let mut sy = 0.0_f64;
+        for pt in ring {
+            sx += pt.get(0).and_then(|v| v.as_f64()).unwrap_or(0.0);
+            sy += pt.get(1).and_then(|v| v.as_f64()).unwrap_or(0.0);
+        }
+        return (sy / ring.len() as f64, sx / ring.len() as f64);
+    }
+
+    cx /= 6.0 * area;
+    cy /= 6.0 * area;
+
+    (cy, cx)
 }
 
 /// Fetch BIG village data from ArcGIS API, using a local JSON cache.
@@ -70,7 +179,7 @@ fn load_big_cache(
             r.get("lon").and_then(|v| v.as_f64()),
         ) {
             let rings = if include_polygons {
-                spatial::extract_rings(&r)
+                extract_rings(&r)
             } else {
                 None
             };
@@ -147,9 +256,9 @@ fn fetch_big_from_api(
             if let (Some(code), Some(name)) = (code, name) {
                 let geometry = feature.get("geometry");
                 let (lat, lon, rings) = if let Some(geom) = geometry {
-                    let (centroid_lat, centroid_lon) = spatial::compute_centroid(geom);
+                    let (centroid_lat, centroid_lon) = compute_centroid(geom);
                     let extracted_rings = if include_polygons {
-                        spatial::extract_rings(geom)
+                        extract_rings(geom)
                     } else {
                         None
                     };

@@ -27,7 +27,7 @@ fn main() {
     };
 
     let conn = db.conn_guard();
-    let mut official_map: HashMap<String, OfficialVillage> = HashMap::new();
+    let mut official_map: HashMap<String, VillageEntry> = HashMap::new();
     let mut stmt = conn
         .prepare("SELECT kode, nama, kecamatan, kota, provinsi, lat, lon FROM locations")
         .expect("failed to prepare official query");
@@ -36,7 +36,7 @@ fn main() {
         let code: String = row.get(0).expect("kode");
         official_map.insert(
             code.clone(),
-            OfficialVillage {
+            VillageEntry {
                 code,
                 name: row.get(1).expect("nama"),
                 district: row.get(2).expect("kecamatan"),
@@ -49,7 +49,7 @@ fn main() {
     }
 
     // Load snapshot into map
-    let mut legacy_map: HashMap<String, LegacyVillage> = HashMap::new();
+    let mut legacy_map: HashMap<String, VillageEntry> = HashMap::new();
     for r in snapshot {
         if let (Some(code), Some(lat), Some(lon)) = (
             r.get("code").and_then(|v| v.as_str()),
@@ -58,7 +58,7 @@ fn main() {
         ) {
             legacy_map.insert(
                 code.to_string(),
-                LegacyVillage {
+                VillageEntry {
                     code: code.to_string(),
                     name: r
                         .get("name")
@@ -191,18 +191,7 @@ fn main() {
 }
 
 #[derive(Clone)]
-struct OfficialVillage {
-    code: String,
-    name: String,
-    district: String,
-    city: String,
-    province: String,
-    lat: f64,
-    lon: f64,
-}
-
-#[derive(Clone)]
-struct LegacyVillage {
+struct VillageEntry {
     code: String,
     name: String,
     district: String,
@@ -215,16 +204,16 @@ struct LegacyVillage {
 struct VerificationReport {
     official_count: usize,
     legacy_count: usize,
-    new_villages: Vec<OfficialVillage>,
-    missing_villages: Vec<LegacyVillage>,
+    new_villages: Vec<VillageEntry>,
+    missing_villages: Vec<VillageEntry>,
     name_diffs: Vec<(String, String, String)>,
     coord_drifts: Vec<(String, f64)>,
     hierarchy_diffs: Vec<(String, String, String, String, String, String, String)>,
 }
 
 fn compare_data(
-    official_map: &HashMap<String, OfficialVillage>,
-    mut legacy_map: HashMap<String, LegacyVillage>,
+    official_map: &HashMap<String, VillageEntry>,
+    mut legacy_map: HashMap<String, VillageEntry>,
 ) -> VerificationReport {
     let original_legacy_count = legacy_map.len();
     let mut new_villages = Vec::new();

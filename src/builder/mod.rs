@@ -75,6 +75,13 @@ pub struct PipelineError {
 }
 
 impl PipelineError {
+    fn from_error<E: std::error::Error + Send + Sync + 'static>(e: E) -> Self {
+        PipelineError {
+            message: e.to_string(),
+            source: Some(Box::new(e)),
+        }
+    }
+
     /// Creates a new `PipelineError` with the given message and no source.
     pub fn new(msg: impl Into<String>) -> Self {
         PipelineError {
@@ -131,28 +138,19 @@ impl<T, E: std::error::Error + Send + Sync + 'static> PipelineResultExt<T> for R
 
 impl From<std::io::Error> for PipelineError {
     fn from(e: std::io::Error) -> Self {
-        PipelineError {
-            message: e.to_string(),
-            source: Some(Box::new(e)),
-        }
+        Self::from_error(e)
     }
 }
 
 impl From<rusqlite::Error> for PipelineError {
     fn from(e: rusqlite::Error) -> Self {
-        PipelineError {
-            message: e.to_string(),
-            source: Some(Box::new(e)),
-        }
+        Self::from_error(e)
     }
 }
 
 impl From<serde_json::Error> for PipelineError {
     fn from(e: serde_json::Error) -> Self {
-        PipelineError {
-            message: e.to_string(),
-            source: Some(Box::new(e)),
-        }
+        Self::from_error(e)
     }
 }
 
@@ -315,6 +313,13 @@ impl Pipeline {
     /// 7. Compute SHA-256 of the final database
     ///
     /// Returns `PipelineOutput` on success, or `PipelineError` if any step fails.
+    ///
+    /// NOTE: The pipeline does not currently support resuming from a failed step.
+    /// If step 6 (build_db) fails after spending significant time in steps 1–5,
+    /// re-running will redo all work. Cached files (PDF, BIG JSON) help avoid
+    /// redundant downloads, but parsing and merging are repeated. A future
+    /// improvement could checkpoint intermediate results (e.g., parsed villages)
+    /// to allow resuming from the point of failure.
     pub fn run(self) -> Result<PipelineOutput, PipelineError> {
         eprintln!("Starting pipeline...");
 
@@ -353,7 +358,7 @@ impl Pipeline {
             None
         };
 
-        let sha256 = db_create::compute_sha256(&self.output)?;
+        let sha256 = util::hash_file(&self.output)?;
 
         let village_count = merged.len();
 

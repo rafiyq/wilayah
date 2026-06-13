@@ -67,9 +67,6 @@ name = "query"
 name = "locate"
 
 [[test]]
-name = "geometry"
-
-[[test]]
 name = "types"
 
 [[test]]

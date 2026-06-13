@@ -1,15 +1,27 @@
-use rusqlite::{functions::FunctionFlags, Connection};
-#[cfg(feature = "raw-sqlite")]
-use std::sync::MutexGuard;
-use std::sync::{Mutex, OnceLock};
+//! Embedded SQLite database for Indonesian village lookups.
 
-use crate::geometry::{deserialize_vertices, haversine_km, point_in_polygon};
-use crate::types::{
-    location_from_village, DataInfo, LocateMethod, Location, LookupResult, PrefixResult, Village,
-    CODE_PREFIX_MAX_LIMIT, NEAREST_MAX_LIMIT, SEARCH_MAX_LIMIT,
-};
+mod meta;
+mod polygon;
+mod query;
+
+use rusqlite::{functions::FunctionFlags, Connection};
+use std::sync::{Mutex, MutexGuard, OnceLock};
+
+use crate::geometry::haversine_km;
+use crate::types::{DataInfo, Location, LookupResult, PrefixResult, Village};
 
 const DB_BYTES: &[u8] = include_bytes!(env!("LOCATION_DB_PATH"));
+
+/// Village columns in the `locations` table (Indonesian SQL names).
+///
+/// Mapping to English struct fields:
+/// `kode` → `code`, `nama` → `name`, `kecamatan` → `district`,
+/// `kota` → `city`, `provinsi` → `province`, `lat` → `lat`, `lon` → `lon`.
+pub(super) const VILLAGE_COLS: &str = "kode, nama, kecamatan, kota, provinsi, lat, lon";
+
+/// Same columns with `l.` prefix for JOIN queries against the `locations` table.
+pub(super) const VILLAGE_COLS_L: &str =
+    "l.kode, l.nama, l.kecamatan, l.kota, l.provinsi, l.lat, l.lon";
 
 /// Error type for database operations.
 ///
@@ -17,6 +29,7 @@ const DB_BYTES: &[u8] = include_bytes!(env!("LOCATION_DB_PATH"));
 /// type in the public API. Implements [`std::error::Error`] and can be
 /// converted from `rusqlite::Error` automatically.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct Error {
     inner: rusqlite::Error,
 }
@@ -82,6 +95,18 @@ pub struct Database {
 }
 
 impl Database {
+    fn lock_conn(&self) -> MutexGuard<'_, Connection> {
+        self.conn.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn lock_poly(&self) -> MutexGuard<'_, Connection> {
+        self.poly_conn
+            .as_ref()
+            .expect("lock_poly called without polygon DB")
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Open the embedded location database.
     ///
     /// Loads the ~20 MB SQLite database from the compiled binary into memory
@@ -183,12 +208,7 @@ impl Database {
     /// # Ok::<_, wilayah::Error>(())
     /// ```
     pub fn find_nearest(&self, lat: f64, lon: f64, limit: usize) -> Result<Vec<Village>> {
-        nearest(
-            &self.conn.lock().unwrap_or_else(|e| e.into_inner()),
-            lat,
-            lon,
-            limit,
-        )
+        query::nearest(&self.lock_conn(), lat, lon, limit)
     }
 
     /// Search for villages by name.
@@ -216,11 +236,7 @@ impl Database {
     /// # Ok::<_, wilayah::Error>(())
     /// ```
     pub fn find_by_name(&self, query: &str, limit: usize) -> Result<Vec<Village>> {
-        search(
-            &self.conn.lock().unwrap_or_else(|e| e.into_inner()),
-            query,
-            limit,
-        )
+        query::search(&self.lock_conn(), query, limit)
     }
 
     /// Search for a unique village by name.
@@ -244,7 +260,7 @@ impl Database {
     /// # Ok::<_, wilayah::Error>(())
     /// ```
     pub fn find_by_name_unique(&self, query: &str) -> Result<LookupResult> {
-        search_unique(&self.conn.lock().unwrap_or_else(|e| e.into_inner()), query)
+        query::search_unique(&self.lock_conn(), query)
     }
 
     /// Find a village by its BMKG-compatible administrative code.
@@ -260,7 +276,7 @@ impl Database {
     /// # Ok::<_, wilayah::Error>(())
     /// ```
     pub fn find_by_code(&self, code: &str) -> Result<Option<Village>> {
-        by_code(&self.conn.lock().unwrap_or_else(|e| e.into_inner()), code)
+        query::by_code(&self.lock_conn(), code)
     }
 
     /// Find all villages matching an administrative code prefix with pagination.
@@ -289,12 +305,7 @@ impl Database {
         limit: usize,
         offset: usize,
     ) -> Result<PrefixResult> {
-        by_code_prefix(
-            &self.conn.lock().unwrap_or_else(|e| e.into_inner()),
-            prefix,
-            limit,
-            offset,
-        )
+        query::by_code_prefix(&self.lock_conn(), prefix, limit, offset)
     }
 
     /// Reverse-geocode a lat/lon to the full administrative hierarchy.
@@ -319,50 +330,19 @@ impl Database {
     /// # Ok::<_, wilayah::Error>(())
     /// ```
     pub fn locate(&self, lat: f64, lon: f64) -> Result<Option<Location>> {
-        if let Some(poly_conn) = &self.poly_conn {
+        if self.poly_conn.is_some() {
             let candidates = {
-                let poly = poly_conn.lock().unwrap_or_else(|e| e.into_inner());
-                query_polygon_candidates(&poly, lat, lon)?
+                let poly = self.lock_poly();
+                polygon::query_polygon_candidates(&poly, lat, lon)?
             };
-            for (village_id, rings) in &candidates {
-                let exteriors: Vec<&[(f64, f64)]> = rings
-                    .iter()
-                    .filter(|(rt, _)| rt == "exterior")
-                    .map(|(_, v)| v.as_slice())
-                    .collect();
-                let interiors: Vec<&[(f64, f64)]> = rings
-                    .iter()
-                    .filter(|(rt, _)| rt == "interior")
-                    .map(|(_, v)| v.as_slice())
-                    .collect();
-
-                for exterior in &exteriors {
-                    if point_in_polygon(lat, lon, exterior, &interiors) {
-                        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-                        let village = by_id(&conn, *village_id)?;
-                        let Some(village) = village else {
-                            continue;
-                        };
-                        let dist_km = haversine_km(lat, lon, village.lat, village.lon);
-                        return Ok(location_from_village(
-                            &village,
-                            dist_km,
-                            LocateMethod::Contained,
-                        ));
-                    }
-                }
+            if let Some(loc) =
+                polygon::locate_contained(&candidates, &self.lock_conn(), lat, lon, query::by_id)?
+            {
+                return Ok(Some(loc));
             }
-            return locate_nearest(
-                &self.conn.lock().unwrap_or_else(|e| e.into_inner()),
-                lat,
-                lon,
-            );
+            return query::locate_nearest(&self.lock_conn(), lat, lon);
         }
-        locate_nearest(
-            &self.conn.lock().unwrap_or_else(|e| e.into_inner()),
-            lat,
-            lon,
-        )
+        query::locate_nearest(&self.lock_conn(), lat, lon)
     }
 
     /// Get metadata about the embedded location database.
@@ -371,7 +351,7 @@ impl Database {
     /// village count. Returns default values if the table is missing
     /// or keys are absent.
     pub fn data_info(&self) -> DataInfo {
-        data_info_from_conn(&self.conn.lock().unwrap_or_else(|e| e.into_inner()))
+        meta::data_info_from_conn(&self.lock_conn())
     }
 
     /// Get the total number of villages in the database.
@@ -385,11 +365,9 @@ impl Database {
     /// # Ok::<_, wilayah::Error>(())
     /// ```
     pub fn village_count(&self) -> Result<u32> {
-        let count: i64 = self
-            .conn
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .query_row("SELECT COUNT(*) FROM locations", [], |row| row.get(0))?;
+        let count: i64 =
+            self.lock_conn()
+                .query_row("SELECT COUNT(*) FROM locations", [], |row| row.get(0))?;
         Ok(u32::try_from(count).expect("village count exceeds u32 range"))
     }
 }
@@ -411,54 +389,7 @@ impl Database {
     ///
     /// See the [feature flag documentation](#feature-flags) for caveats.
     pub fn conn_guard(&self) -> MutexGuard<'_, Connection> {
-        self.conn.lock().unwrap_or_else(|e| e.into_inner())
-    }
-}
-
-fn query_meta(conn: &Connection, key: &str) -> Option<String> {
-    conn.query_row("SELECT value FROM db_meta WHERE key = ?1", [key], |row| {
-        row.get(0)
-    })
-    .ok()
-}
-
-fn data_info_from_conn(conn: &Connection) -> DataInfo {
-    DataInfo {
-        source: query_meta(conn, "source").unwrap_or_else(|| "unknown".to_string()),
-        decree: query_meta(conn, "decree").unwrap_or_else(|| "unknown".to_string()),
-        village_count: query_meta(conn, "village_count")
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0),
-        build_date: query_meta(conn, "build_date")
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0),
-    }
-}
-
-fn village_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Village> {
-    Ok(Village {
-        code: row.get(0)?,
-        name: row.get(1)?,
-        district: row.get(2)?,
-        city: row.get(3)?,
-        province: row.get(4)?,
-        lat: row.get(5)?,
-        lon: row.get(6)?,
-        dist_km: None,
-    })
-}
-
-fn village_by_field<P: rusqlite::types::ToSql>(
-    conn: &Connection,
-    sql: &str,
-    param: P,
-) -> Result<Option<Village>> {
-    let mut stmt = conn.prepare_cached(sql)?;
-    let mut rows = stmt.query_map(rusqlite::params![param], village_from_row)?;
-    match rows.next() {
-        Some(Ok(v)) => Ok(Some(v)),
-        Some(Err(e)) => Err(Error::from(e)),
-        None => Ok(None),
+        self.lock_conn()
     }
 }
 
@@ -466,209 +397,8 @@ static CACHED_DATA_INFO: OnceLock<DataInfo> = OnceLock::new();
 
 pub(crate) fn cached_data_info() -> &'static DataInfo {
     CACHED_DATA_INFO.get_or_init(|| {
-        let db = Database::open().expect("failed to open embedded database for metadata");
-        db.data_info()
+        Database::open()
+            .map(|db| db.data_info())
+            .unwrap_or_default()
     })
-}
-
-fn nearest(conn: &Connection, lat: f64, lon: f64, limit: usize) -> Result<Vec<Village>> {
-    let limit = limit.clamp(1, NEAREST_MAX_LIMIT);
-
-    let deltas: [f64; 10] = [0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0, 15.0, 45.0, 180.0];
-
-    for &delta in &deltas {
-        let sql = "
-            SELECT l.kode, l.nama, l.kecamatan, l.kota, l.provinsi, l.lat, l.lon,
-                   haversine_km(?1, ?2, l.lat, l.lon) AS dist
-            FROM locations l
-            JOIN geo_rtree r ON l.id = r.id
-            WHERE r.min_lon <= ?4 AND r.max_lon >= ?3
-              AND r.min_lat <= ?6 AND r.max_lat >= ?5
-            ORDER BY dist
-            LIMIT ?7
-        ";
-
-        let mut stmt = conn.prepare_cached(sql)?;
-        let rows = stmt.query_map(
-            rusqlite::params![
-                lat,
-                lon,
-                lon - delta,
-                lon + delta,
-                lat - delta,
-                lat + delta,
-                limit as i64
-            ],
-            |row| {
-                Ok(Village {
-                    code: row.get(0)?,
-                    name: row.get(1)?,
-                    district: row.get(2)?,
-                    city: row.get(3)?,
-                    province: row.get(4)?,
-                    lat: row.get(5)?,
-                    lon: row.get(6)?,
-                    dist_km: Some(row.get(7)?),
-                })
-            },
-        )?;
-
-        let results: Vec<Village> = rows
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(Error::from)?;
-
-        if results.len() >= limit {
-            return Ok(results);
-        }
-    }
-
-    Ok(vec![])
-}
-
-fn search(conn: &Connection, query: &str, limit: usize) -> Result<Vec<Village>> {
-    let limit = limit.clamp(1, SEARCH_MAX_LIMIT);
-
-    let sql = "
-        SELECT l.kode, l.nama, l.kecamatan, l.kota, l.provinsi, l.lat, l.lon
-        FROM locations_fts f
-        JOIN locations l ON f.rowid = l.id
-        WHERE locations_fts MATCH ?1
-        ORDER BY rank
-        LIMIT ?2
-    ";
-
-    let mut stmt = conn.prepare_cached(sql)?;
-    let rows = stmt.query_map(rusqlite::params![query, limit as i64], |row| {
-        village_from_row(row)
-    })?;
-
-    rows.collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(Error::from)
-}
-
-fn by_code(conn: &Connection, code: &str) -> Result<Option<Village>> {
-    village_by_field(
-        conn,
-        "SELECT kode, nama, kecamatan, kota, provinsi, lat, lon
-         FROM locations WHERE kode = ?1",
-        code,
-    )
-}
-
-fn by_code_prefix(
-    conn: &Connection,
-    prefix: &str,
-    limit: usize,
-    offset: usize,
-) -> Result<PrefixResult> {
-    let limit = limit.clamp(1, CODE_PREFIX_MAX_LIMIT);
-    let pattern = format!("{}%", prefix);
-
-    // Get total count (COUNT(*) returns i64, cast to usize)
-    let total_i64: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM locations WHERE kode LIKE ?1",
-        [&pattern],
-        |row| row.get(0),
-    )?;
-    let total = total_i64 as usize;
-
-    // Get page of results
-    let mut stmt = conn.prepare_cached(
-        "SELECT kode, nama, kecamatan, kota, provinsi, lat, lon
-         FROM locations
-         WHERE kode LIKE ?1
-         ORDER BY kode
-         LIMIT ?2
-         OFFSET ?3",
-    )?;
-    let rows = stmt.query_map(
-        rusqlite::params![pattern, limit as i64, offset as i64],
-        village_from_row,
-    )?;
-    let villages: Vec<Village> = rows
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(Error::from)?;
-
-    let has_more = offset + villages.len() < total;
-
-    Ok(PrefixResult {
-        villages,
-        total,
-        has_more,
-    })
-}
-
-fn search_unique(conn: &Connection, query: &str) -> Result<LookupResult> {
-    let mut stmt = conn.prepare_cached(
-        "SELECT l.kode, l.nama, l.kecamatan, l.kota, l.provinsi, l.lat, l.lon
-         FROM locations_fts f
-         JOIN locations l ON f.rowid = l.id
-         WHERE locations_fts MATCH ?1
-         ORDER BY rank
-         LIMIT 20",
-    )?;
-    let rows = stmt.query_map(rusqlite::params![query], village_from_row)?;
-    let results: Vec<_> = rows
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(Error::from)?;
-
-    Ok(match results.len() {
-        0 => LookupResult::NotFound,
-        1 => LookupResult::Found(results.into_iter().next().unwrap()),
-        _ => LookupResult::Ambiguous(results),
-    })
-}
-
-fn locate_nearest(conn: &Connection, lat: f64, lon: f64) -> Result<Option<Location>> {
-    let mut results = nearest(conn, lat, lon, 1)?;
-    let village = match results.pop() {
-        Some(v) => v,
-        None => return Ok(None),
-    };
-
-    let dist_km = village.dist_km.unwrap_or(0.0);
-    Ok(location_from_village(
-        &village,
-        dist_km,
-        LocateMethod::Nearest,
-    ))
-}
-
-type VillageRingMap = std::collections::HashMap<i64, Vec<(String, Vec<(f64, f64)>)>>;
-
-fn query_polygon_candidates(poly_conn: &Connection, lat: f64, lon: f64) -> Result<VillageRingMap> {
-    let sql = "
-        SELECT vp.village_id, vp.ring_type, vp.vertices
-        FROM village_polygons vp
-        WHERE vp.min_lon <= ?2 AND vp.max_lon >= ?1
-        AND vp.min_lat <= ?4 AND vp.max_lat >= ?3
-    ";
-
-    let mut stmt = poly_conn.prepare_cached(sql)?;
-    let rows = stmt.query_map(rusqlite::params![lon, lon, lat, lat], |row| {
-        let village_id: i64 = row.get(0)?;
-        let ring_type: String = row.get(1)?;
-        let vertices_blob: Vec<u8> = row.get(2)?;
-        Ok((village_id, ring_type, vertices_blob))
-    })?;
-
-    let mut village_rings = VillageRingMap::new();
-    for row in rows {
-        let (village_id, ring_type, blob) = row?;
-        let vertices = deserialize_vertices(&blob);
-        village_rings
-            .entry(village_id)
-            .or_default()
-            .push((ring_type, vertices));
-    }
-
-    Ok(village_rings)
-}
-
-fn by_id(conn: &Connection, id: i64) -> Result<Option<Village>> {
-    village_by_field(
-        conn,
-        "SELECT kode, nama, kecamatan, kota, provinsi, lat, lon FROM locations WHERE id = ?1",
-        id,
-    )
 }

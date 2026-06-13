@@ -11,6 +11,13 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
+fn set_write_pragmas(conn: &Connection) -> Result<(), PipelineError> {
+    conn.execute_batch(
+        "PRAGMA journal_mode = OFF; PRAGMA synchronous = OFF; PRAGMA page_size = 4096;",
+    )
+    .ctx("PRAGMA failed")
+}
+
 /// A merged village record combining PDF and BIG data.
 pub(crate) struct MergedVillage {
     pub(crate) code: String,
@@ -130,10 +137,7 @@ pub(crate) fn build_db(
 }
 
 fn create_db_schema(conn: &Connection) -> Result<(), PipelineError> {
-    conn.execute_batch(
-        "PRAGMA journal_mode = OFF; PRAGMA synchronous = OFF; PRAGMA page_size = 4096;",
-    )
-    .ctx("PRAGMA failed")?;
+    set_write_pragmas(conn)?;
 
     conn.execute(
         "CREATE TABLE locations (
@@ -268,10 +272,7 @@ pub(crate) fn build_poly_db(
 }
 
 fn create_poly_db_schema(conn: &Connection) -> Result<(), PipelineError> {
-    conn.execute_batch(
-        "PRAGMA journal_mode = OFF; PRAGMA synchronous = OFF; PRAGMA page_size = 4096;",
-    )
-    .ctx("PRAGMA failed")?;
+    set_write_pragmas(conn)?;
 
     conn.execute(
         "CREATE TABLE village_polygons (
@@ -279,7 +280,6 @@ fn create_poly_db_schema(conn: &Connection) -> Result<(), PipelineError> {
             village_id INTEGER NOT NULL,
             ring_idx INTEGER NOT NULL,
             ring_type TEXT NOT NULL DEFAULT 'exterior',
-            parent_ring_id INTEGER,
             min_lon REAL NOT NULL,
             max_lon REAL NOT NULL,
             min_lat REAL NOT NULL,
@@ -315,8 +315,8 @@ fn insert_polygons(
     {
         let mut ins = tx
             .prepare(
-                "INSERT INTO village_polygons (id, village_id, ring_idx, ring_type, parent_ring_id, min_lon, max_lon, min_lat, max_lat, vertices) \
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                "INSERT INTO village_polygons (id, village_id, ring_idx, ring_type, min_lon, max_lon, min_lat, max_lat, vertices) \
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             )
             .ctx("prepare insert village_polygons")?;
 
@@ -351,7 +351,6 @@ fn insert_polygons(
                     village_idx as i64 + 1,
                     ring_idx as i64,
                     ring_type,
-                    Option::<i64>::None,
                     min_lon,
                     max_lon,
                     min_lat,
@@ -365,11 +364,6 @@ fn insert_polygons(
 
     tx.commit().ctx("failed to commit poly DB transaction")?;
     Ok(())
-}
-
-/// Compute the SHA-256 hash of a file, returned as lowercase hex.
-pub(crate) fn compute_sha256(db_path: &Path) -> Result<String, PipelineError> {
-    super::util::hash_file(db_path)
 }
 
 #[cfg(test)]

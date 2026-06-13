@@ -248,10 +248,7 @@ impl VillageParser {
 
             if let Some(code) = self.village_code_re.captures(line).and_then(|c| c.get(1)) {
                 let code_str = code.as_str().to_string();
-                let district_code = code_str[..8].to_string();
-                if district_code != current_district_code {
-                    current_district_code = district_code.clone();
-                }
+                current_district_code = code_str[..8].to_string();
 
                 let after_code = &line[code.end()..];
                 if let Some(extracted) = extract_village_name(after_code, &self.name_re) {

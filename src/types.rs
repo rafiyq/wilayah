@@ -21,8 +21,9 @@ pub const CODE_PREFIX_MAX_LIMIT: usize = 1000;
 /// Metadata is read from the `db_meta` table embedded in the database itself,
 /// so it is always correct regardless of how the binary was built (pipeline mode
 /// or download mode).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
+#[non_exhaustive]
 pub struct DataInfo {
     /// The upstream data source (e.g., `"official"` or `"release"`).
     pub source: String,
@@ -38,6 +39,7 @@ pub struct DataInfo {
 /// A village record with administrative hierarchy and coordinates.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
+#[non_exhaustive]
 pub struct Village {
     /// BMKG-compatible administrative code (e.g., `31.71.03.1001`)
     pub code: String,
@@ -108,6 +110,7 @@ impl fmt::Display for AdminLevel {
 /// Result of a reverse-geocode lookup showing the full administrative hierarchy.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
+#[non_exhaustive]
 pub struct Location {
     /// Province level (code + name).
     pub province: AdminLevel,
@@ -187,6 +190,7 @@ pub fn location_from_village(v: &Village, dist_km: f64, method: LocateMethod) ->
 /// ```
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
+#[non_exhaustive]
 pub enum LookupResult {
     /// Exactly one match
     Found(Village),
@@ -218,6 +222,7 @@ impl fmt::Display for LookupResult {
 /// Paginated result from a code prefix lookup.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
+#[non_exhaustive]
 pub struct PrefixResult {
     /// The villages in this page of results.
     pub villages: Vec<Village>,
@@ -236,5 +241,89 @@ impl fmt::Display for PrefixResult {
             self.total,
             self.has_more,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_locate_method_display() {
+        assert_eq!(format!("{}", LocateMethod::Nearest), "nearest");
+        assert_eq!(format!("{}", LocateMethod::Contained), "contained");
+    }
+
+    #[test]
+    fn test_location_from_village() {
+        let v = Village {
+            code: "31.71.03.1001".into(),
+            name: "Kemayoran".into(),
+            district: "Kemayoran".into(),
+            city: "Jakarta Pusat".into(),
+            province: "DKI Jakarta".into(),
+            lat: -6.1647,
+            lon: 106.8453,
+            dist_km: None,
+        };
+        let loc =
+            location_from_village(&v, 1.5, LocateMethod::Nearest).expect("should parse valid code");
+        assert_eq!(loc.province.code, "31");
+        assert_eq!(loc.city.code, "31.71");
+        assert_eq!(loc.district.code, "31.71.03");
+        assert_eq!(loc.village_code, "31.71.03.1001");
+        assert_eq!(loc.dist_km, 1.5);
+        assert_eq!(loc.method, LocateMethod::Nearest);
+    }
+
+    #[test]
+    fn test_location_from_village_bad_code() {
+        let v = Village {
+            code: "invalid".into(),
+            name: "Test".into(),
+            district: "Test".into(),
+            city: "Test".into(),
+            province: "Test".into(),
+            lat: 0.0,
+            lon: 0.0,
+            dist_km: None,
+        };
+        assert!(location_from_village(&v, 0.0, LocateMethod::Nearest).is_none());
+    }
+
+    #[test]
+    fn test_location_from_village_three_parts() {
+        let v = Village {
+            code: "31.71.03".into(),
+            name: "Test".into(),
+            district: "Test".into(),
+            city: "Test".into(),
+            province: "Test".into(),
+            lat: 0.0,
+            lon: 0.0,
+            dist_km: None,
+        };
+        assert!(
+            location_from_village(&v, 0.0, LocateMethod::Nearest).is_none(),
+            "3-part code should return None"
+        );
+    }
+
+    #[test]
+    fn test_location_from_village_five_parts() {
+        let v = Village {
+            code: "31.71.03.1001.5".into(),
+            name: "Test".into(),
+            district: "Test".into(),
+            city: "Test".into(),
+            province: "Test".into(),
+            lat: 0.0,
+            lon: 0.0,
+            dist_km: None,
+        };
+        assert!(
+            location_from_village(&v, 0.0, LocateMethod::Nearest).is_none(),
+            "5-part code should return None"
+        );
     }
 }
