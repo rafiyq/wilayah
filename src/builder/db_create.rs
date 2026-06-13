@@ -393,6 +393,7 @@ mod tests {
             raw_name: None,
             note_keyword: None,
             note_boundary: None,
+            district_note: None,
         }
     }
 

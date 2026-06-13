@@ -16,6 +16,8 @@ pub(crate) struct VillageRecord {
     pub(crate) note_keyword: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) note_boundary: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) district_note: Option<String>,
 }
 
 /// How much detail to include when saving parsed village records to JSON.
@@ -40,6 +42,14 @@ pub(crate) struct ExtractedName {
     pub(crate) note_keyword: Option<String>,
     /// The byte position where the note boundary was found.
     pub(crate) note_boundary: Option<usize>,
+}
+
+/// Result of extracting a district name from a kecamatan line in PDF text.
+pub(crate) struct ExtractedDistrict {
+    /// The cleaned district name (after column splitting + note stripping).
+    pub(crate) name: String,
+    /// Annotation text from the kecamatan line (e.g., "Semula wil. Provinsi Papua Barat; UU No. 16 Tahun 2025").
+    pub(crate) note: Option<String>,
 }
 
 /// A parsed section header from the PDF (province + city grouping).
@@ -230,6 +240,7 @@ impl VillageParser {
         let mut current_city = "";
         let mut current_district_code = String::new();
         let mut current_district_name = String::new();
+        let mut current_district_note: Option<String> = None;
 
         for line in text.lines() {
             if let Some(header) = parse_section_header(line, &self.section_header_re) {
@@ -237,12 +248,15 @@ impl VillageParser {
                 current_city = header.city;
                 current_district_code.clear();
                 current_district_name.clear();
+                current_district_note = None;
             }
 
             if let Some(cap) = self.kecamatan_code_re.captures(line) {
                 current_district_code = cap.get(1).unwrap().as_str().to_string();
                 let after_prefix = &line[cap.get(0).unwrap().start()..];
-                current_district_name = extract_district_name(after_prefix);
+                let extracted = extract_district_name(after_prefix);
+                current_district_name = extracted.name;
+                current_district_note = extracted.note;
                 continue;
             }
 
@@ -265,6 +279,7 @@ impl VillageParser {
                         raw_name: extracted.raw_name,
                         note_keyword: extracted.note_keyword,
                         note_boundary: extracted.note_boundary,
+                        district_note: current_district_note.clone(),
                     });
                 }
             }
@@ -282,24 +297,175 @@ pub(crate) fn parse_villages(text: &str) -> Vec<VillageRecord> {
     VillageParser::new().parse(text)
 }
 
-/// Extract the district name from the text after a kecamatan code match.
+/// Note keywords to look for in district name suffixes (after column splitting).
 ///
-/// Kecamatan lines have the format: `CODE NUMBER NAME - VILLAGE_COUNT`
-/// e.g., `31.73.01 60 KECAMATAN BALEENDAH - 7`
+/// These are a subset of village note keywords — only ones that commonly appear
+/// in kecamatan annotation columns.
+const DISTRICT_NOTE_KEYWORDS: &[&str] = &[
+    "Semula",
+    "Menjadi",
+    "Perbaikan",
+    "Pemekaran",
+    "Koreksi",
+    "Perda",
+    "Perbup",
+    "Kepbup",
+    "UU",
+    "Qanun",
+    "Berubah",
+    "Penataan",
+    "Penghapusan",
+    "Penggabungan",
+    "Pembentukan",
+];
+
+/// Minimum consecutive spaces that indicate a column boundary in pdftotext -layout output.
+const COLUMN_GAP_SPACES: usize = 3;
+
+/// Split text on 3+ consecutive spaces (the column separator in `pdftotext -layout` output).
 ///
-/// This function:
-/// 1. Finds the last digit in the line (the village count)
-/// 2. Takes text before it, trims trailing dashes/commas/spaces
-/// 3. Extracts the name portion (starting from first non-separator character
-///    after the code+number prefix)
-fn extract_district_name(after_prefix: &str) -> String {
-    if let Some(name_end) = after_prefix.rfind(|c: char| c.is_ascii_digit()) {
-        let name_part = after_prefix[..name_end].trim();
-        let cleaned = strip_trailing_separators(name_part);
-        let name = skip_code_prefix(cleaned);
-        return strip_trailing_separators(name).to_string();
+/// Returns non-empty trimmed parts. For example:
+/// `"Bakongan                               7"` → `["Bakongan", "7"]`
+/// `"Abenaho                   Semula wil Prov."` → `["Abenaho", "Semula wil Prov."]`
+fn split_on_column_gap(text: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut in_gap = false;
+    let mut gap_start = 0;
+    let mut space_count = 0;
+
+    for (i, c) in text.char_indices() {
+        if c == ' ' {
+            if !in_gap {
+                in_gap = true;
+                gap_start = i;
+            }
+            space_count += 1;
+        } else {
+            if in_gap && space_count >= COLUMN_GAP_SPACES {
+                let part = text[start..gap_start].trim();
+                if !part.is_empty() {
+                    parts.push(part);
+                }
+                start = i;
+            }
+            in_gap = false;
+            space_count = 0;
+        }
     }
-    String::new()
+
+    let last = text[start..].trim();
+    if !last.is_empty() {
+        parts.push(last);
+    }
+
+    parts
+}
+
+/// Check if a string matches the `XX.XX.XX` kecamatan code pattern.
+fn is_kecamatan_code(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    bytes.len() == 8
+        && bytes[2] == b'.'
+        && bytes[5] == b'.'
+        && bytes[0].is_ascii_digit()
+        && bytes[1].is_ascii_digit()
+        && bytes[3].is_ascii_digit()
+        && bytes[4].is_ascii_digit()
+        && bytes[6].is_ascii_digit()
+        && bytes[7].is_ascii_digit()
+}
+
+/// Extract the district name and optional annotation note from a kecamatan line.
+///
+/// Kecamatan lines in `pdftotext -layout` output have two formats:
+///
+/// **Format 1** (table): `CODE NUMBER NAME [columns...] [note]`
+/// ```text
+/// 11.01.01 1 Bakongan                               7
+/// 11.01.10 10 Pasie Raja  21  Perbaikan nama...
+/// 96.01.01 1 Makbon  1  14  Semula wil. Provinsi...
+/// ```
+///
+/// **Format 2** (listing): `CODE  NUMBER NAME [note]`
+/// ```text
+/// 96.01.01                    1 Makbon    Semula wil. Provinsi...
+/// ```
+///
+/// The extraction flow:
+/// 1. `skip_code_prefix` — skip past `CODE NUMBER ` to reach the name portion
+/// 2. Split on 3+ consecutive spaces (column separator) → `[name_part, rest...]`
+/// 3. If `name_part` matches `XX.XX.XX` code pattern, take the next part as name (Format 2)
+/// 4. Apply note keyword stripping to the district name
+/// 5. Extract annotation note from remaining suffix if it contains note keywords
+fn extract_district_name(after_prefix: &str) -> ExtractedDistrict {
+    let trimmed = after_prefix.trim();
+    let name_and_rest = skip_code_prefix(trimmed);
+
+    let parts = split_on_column_gap(name_and_rest);
+
+    let (raw_name, suffix_start) = if !parts.is_empty() && is_kecamatan_code(parts[0]) {
+        if parts.len() > 1 {
+            (parts[1], 2)
+        } else {
+            (parts[0], parts.len())
+        }
+    } else {
+        (parts.first().copied().unwrap_or(""), 1)
+    };
+
+    let stripped = strip_trailing_count(raw_name);
+
+    let (cleaned_name, name_note) = strip_district_note(stripped);
+
+    let suffix_parts: Vec<&str> = parts[suffix_start.min(parts.len())..].to_vec();
+    let suffix_note = if !suffix_parts.is_empty() {
+        extract_suffix_note(suffix_parts.join(" "))
+    } else {
+        None
+    };
+
+    let note = name_note.or(suffix_note);
+
+    ExtractedDistrict {
+        name: cleaned_name.to_string(),
+        note,
+    }
+}
+
+/// Apply note keyword stripping to a district name (for cases where the note keyword
+/// is embedded in the name column before a column gap, e.g., "Abenaho Semula wil Prov.").
+fn strip_district_note(name: &str) -> (&str, Option<String>) {
+    let name_lower = name.to_lowercase();
+    for keyword in DISTRICT_NOTE_KEYWORDS {
+        let kw_lower = keyword.to_lowercase();
+        if let Some(pos) = name_lower.find(&kw_lower) {
+            let cleaned = name[..pos].trim();
+            if !cleaned.is_empty() {
+                let note_text = name[pos..].trim().to_string();
+                return (cleaned, Some(note_text));
+            }
+        }
+    }
+    (name, None)
+}
+
+/// Extract an annotation note from the suffix after the district name column.
+///
+/// The suffix may contain counts (like "7" or "- 7" or "1  14") before the
+/// actual note text. This function finds the earliest note keyword in the
+/// suffix and returns the text from that point onward.
+fn extract_suffix_note(suffix: String) -> Option<String> {
+    let suffix_lower = suffix.to_lowercase();
+    let earliest = DISTRICT_NOTE_KEYWORDS
+        .iter()
+        .filter_map(|kw| {
+            let kw_lower = kw.to_lowercase();
+            suffix_lower.find(&kw_lower).map(|pos| (pos, kw))
+        })
+        .min_by_key(|(pos, _)| *pos);
+
+    earliest.map(|(pos, _)| suffix[pos..].trim().to_string())
 }
 
 /// Skip the code and number prefix in a kecamatan line to get to the name.
@@ -351,19 +517,61 @@ fn skip_code_prefix(s: &str) -> &str {
     }
 }
 
-/// Strip trailing dashes, commas, and spaces from a string, iteratively.
+/// Strip trailing count patterns from a district name.
 ///
-/// Handles patterns like `" - "`, `" -"`, `", "`, `" ,"` etc.
-fn strip_trailing_separators(s: &str) -> &str {
-    let mut result = s;
-    loop {
-        let trimmed = result.trim_end_matches(['-', ',', ' ']);
-        if trimmed.len() == result.len() {
-            break;
-        }
-        result = trimmed;
+/// Handles patterns like `" - 7"`, `" -7"`, `" 7"` when the trailing portion
+/// looks like a count (1-3 digits) rather than part of the name.
+///
+/// A digit sequence is only stripped if it is preceded by a separator pattern
+/// (space + optional dash/spaces) AND the digit sequence has a word boundary
+/// before it (i.e., preceded by a space or dash, not a letter/digit).
+/// Additionally the stripped digit count must be 1-3 digits (typical village count range).
+fn strip_trailing_count(name: &str) -> &str {
+    let trimmed = name.trim_end();
+    if trimmed.is_empty() {
+        return trimmed;
     }
-    result
+
+    let bytes = trimmed.as_bytes();
+    let len = bytes.len();
+
+    let mut digit_end = len;
+    while digit_end > 0 && bytes[digit_end - 1].is_ascii_digit() {
+        digit_end -= 1;
+    }
+
+    let digit_count = len - digit_end;
+    if digit_count == 0 || digit_count > 3 {
+        return trimmed;
+    }
+
+    if digit_end > 0 && bytes[digit_end - 1] == b'-' {
+        let before = trimmed[..digit_end - 1].trim_end();
+        if !before.is_empty() {
+            return before;
+        }
+    }
+
+    let before_space = trimmed[..digit_end].trim_end_matches(' ');
+    if before_space.len() < digit_end && !before_space.is_empty() {
+        let bs_bytes = before_space.as_bytes();
+        if bs_bytes[bs_bytes.len() - 1] == b'-' {
+            let before_dash = before_space[..bs_bytes.len() - 1].trim_end();
+            if !before_dash.is_empty() {
+                return before_dash;
+            }
+        }
+    }
+
+    if !before_space.is_empty()
+        && !before_space
+            .split_whitespace()
+            .any(|word| word.chars().any(|c| c.is_ascii_digit()))
+    {
+        return before_space;
+    }
+
+    trimmed
 }
 
 /// Extract a village name from the text after the village code, stripping notes.
@@ -456,6 +664,7 @@ pub(crate) fn save_parsed_villages(
                 raw_name: None,
                 note_keyword: None,
                 note_boundary: None,
+                district_note: None,
             },
             ParseOutputDetail::WithRawName => VillageRecord {
                 code: v.code.clone(),
@@ -466,6 +675,7 @@ pub(crate) fn save_parsed_villages(
                 raw_name: v.raw_name.clone(),
                 note_keyword: None,
                 note_boundary: None,
+                district_note: v.district_note.clone(),
             },
             ParseOutputDetail::Full => v.clone(),
         })
@@ -719,7 +929,7 @@ mod tests {
     fn test_parse_kecamatan_digit_name() {
         let text = "\
 C.Kabupaten.1) Kabupaten Pasaman Barat Provinsi Sumatera Barat
-13.05.04 4 2 x 11 Anam Lingkuang 3
+13.05.04   4 2 x 11 Anam Lingkuang                           3
 13.05.04.2001 5 BUKIK KILI";
         let villages = parse_villages(text);
         assert_eq!(villages.len(), 1);
@@ -739,36 +949,60 @@ C.Kabupaten.1) Kabupaten Bandung Provinsi Jawa Barat
 
     #[test]
     fn test_extract_district_name_basic() {
-        assert_eq!(
-            extract_district_name("31.73.01 60 KECAMATAN BALEENDAH - 7"),
-            "KECAMATAN BALEENDAH"
-        );
+        let result = extract_district_name("31.73.01 60 KECAMATAN BALEENDAH - 7");
+        assert_eq!(result.name, "KECAMATAN BALEENDAH");
+        assert!(result.note.is_none());
     }
 
     #[test]
     fn test_extract_district_name_trailing_dash_no_space() {
-        assert_eq!(
-            extract_district_name("31.73.01 60 KECAMATAN BALEENDAH-7"),
-            "KECAMATAN BALEENDAH"
-        );
+        let result = extract_district_name("31.73.01 60 KECAMATAN BALEENDAH-7");
+        assert_eq!(result.name, "KECAMATAN BALEENDAH");
+        assert!(result.note.is_none());
     }
 
     #[test]
     fn test_extract_district_name_no_trailing_count() {
+        let result = extract_district_name("31.73.01 60 KECAMATAN BALEENDAH   7");
+        assert_eq!(result.name, "KECAMATAN BALEENDAH");
+        assert!(result.note.is_none());
+    }
+
+    #[test]
+    fn test_strip_trailing_count_dash_space_number() {
         assert_eq!(
-            extract_district_name("31.73.01 60 KECAMATAN BALEENDAH 7"),
+            strip_trailing_count("KECAMATAN BALEENDAH - 7"),
             "KECAMATAN BALEENDAH"
         );
     }
 
     #[test]
-    fn test_strip_trailing_separators() {
-        assert_eq!(strip_trailing_separators("hello - "), "hello");
-        assert_eq!(strip_trailing_separators("hello-"), "hello");
-        assert_eq!(strip_trailing_separators("hello ,"), "hello");
-        assert_eq!(strip_trailing_separators("hello -  "), "hello");
-        assert_eq!(strip_trailing_separators("hello"), "hello");
-        assert_eq!(strip_trailing_separators("hello - - "), "hello");
+    fn test_strip_trailing_count_dash_number() {
+        assert_eq!(
+            strip_trailing_count("KECAMATAN BALEENDAH-7"),
+            "KECAMATAN BALEENDAH"
+        );
+    }
+
+    #[test]
+    fn test_strip_trailing_count_space_number() {
+        assert_eq!(
+            strip_trailing_count("KECAMATAN BALEENDAH 7"),
+            "KECAMATAN BALEENDAH"
+        );
+    }
+
+    #[test]
+    fn test_strip_trailing_count_preserves_name_with_digit() {
+        assert_eq!(
+            strip_trailing_count("2 x 11 Anam Lingkuang 3"),
+            "2 x 11 Anam Lingkuang 3"
+        );
+    }
+
+    #[test]
+    fn test_strip_trailing_count_no_trailing_number() {
+        assert_eq!(strip_trailing_count("Bakongan"), "Bakongan");
     }
 
     #[test]
@@ -899,6 +1133,7 @@ C.K.1) Kabupaten Bandung Provinsi Jawa Barat
             raw_name: None,
             note_keyword: None,
             note_boundary: None,
+            district_note: None,
         }];
         let dir = std::env::temp_dir().join("wilayah_test_parse_minimal");
         std::fs::create_dir_all(&dir).unwrap();
@@ -924,6 +1159,7 @@ C.K.1) Kabupaten Bandung Provinsi Jawa Barat
             raw_name: Some("RAMBONG Semula wil Kec. Bakongan".to_string()),
             note_keyword: Some("Semula".to_string()),
             note_boundary: Some(8),
+            district_note: None,
         }];
         let dir = std::env::temp_dir().join("wilayah_test_parse_raw");
         std::fs::create_dir_all(&dir).unwrap();
@@ -947,6 +1183,7 @@ C.K.1) Kabupaten Bandung Provinsi Jawa Barat
             raw_name: Some("RAMBONG Semula wil Kec. Bakongan".to_string()),
             note_keyword: Some("Semula".to_string()),
             note_boundary: Some(8),
+            district_note: None,
         }];
         let dir = std::env::temp_dir().join("wilayah_test_parse_full");
         std::fs::create_dir_all(&dir).unwrap();
@@ -958,5 +1195,108 @@ C.K.1) Kabupaten Bandung Provinsi Jawa Barat
         assert_eq!(parsed[0]["note_keyword"], "Semula");
         assert_eq!(parsed[0]["note_boundary"], 8);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_split_on_column_gap_basic() {
+        let parts = split_on_column_gap("Bakongan                               7");
+        assert_eq!(parts, vec!["Bakongan", "7"]);
+    }
+
+    #[test]
+    fn test_split_on_column_gap_three_parts() {
+        let parts = split_on_column_gap("Makbon    1    14    Semula wil. Provinsi Papua");
+        assert_eq!(
+            parts,
+            vec!["Makbon", "1", "14", "Semula wil. Provinsi Papua"]
+        );
+    }
+
+    #[test]
+    fn test_split_on_column_gap_no_gap() {
+        let parts = split_on_column_gap("SinglePart");
+        assert_eq!(parts, vec!["SinglePart"]);
+    }
+
+    #[test]
+    fn test_split_on_column_gap_two_spaces_not_split() {
+        let parts = split_on_column_gap("Hello  World");
+        assert_eq!(parts, vec!["Hello  World"]);
+    }
+
+    #[test]
+    fn test_is_kecamatan_code_valid() {
+        assert!(is_kecamatan_code("11.01.01"));
+        assert!(is_kecamatan_code("96.01.01"));
+    }
+
+    #[test]
+    fn test_is_kecamatan_code_invalid() {
+        assert!(!is_kecamatan_code("11.01"));
+        assert!(!is_kecamatan_code("KECAMATAN"));
+        assert!(!is_kecamatan_code("11.01.01.2001"));
+        assert!(!is_kecamatan_code(""));
+    }
+
+    #[test]
+    fn test_extract_district_name_columnar_format() {
+        let result = extract_district_name("11.01.01 1 Bakongan                               7");
+        assert_eq!(result.name, "Bakongan");
+        assert!(result.note.is_none());
+    }
+
+    #[test]
+    fn test_extract_district_name_code_as_name() {
+        let result = extract_district_name("96.01.01                    1 Makbon");
+        assert_eq!(result.name, "Makbon");
+        assert!(result.note.is_none());
+    }
+
+    #[test]
+    fn test_extract_district_name_with_suffix_note() {
+        let result = extract_district_name(
+            "96.01.01 1 Makbon    1  14    Semula wil. Provinsi Papua Barat; UU No. 16 Tahun 2025",
+        );
+        assert_eq!(result.name, "Makbon");
+        assert!(result.note.is_some());
+        let note = result.note.unwrap();
+        assert!(
+            note.starts_with("Semula"),
+            "note should start with 'Semula': {note}"
+        );
+    }
+
+    #[test]
+    fn test_extract_district_name_note_in_name_column() {
+        let result = extract_district_name("96.01.01 1 Abenaho Semula wil Prov.");
+        assert_eq!(result.name, "Abenaho");
+        assert!(result.note.is_some());
+    }
+
+    #[test]
+    fn test_strip_district_note_no_keyword() {
+        let (name, note) = strip_district_note("Bakongan");
+        assert_eq!(name, "Bakongan");
+        assert!(note.is_none());
+    }
+
+    #[test]
+    fn test_strip_district_note_with_keyword() {
+        let (name, note) = strip_district_note("Abenaho Semula wil Prov.");
+        assert_eq!(name, "Abenaho");
+        assert_eq!(note.as_deref(), Some("Semula wil Prov."));
+    }
+
+    #[test]
+    fn test_extract_suffix_note_no_keyword() {
+        assert!(extract_suffix_note("7".to_string()).is_none());
+        assert!(extract_suffix_note("1  14".to_string()).is_none());
+    }
+
+    #[test]
+    fn test_extract_suffix_note_with_keyword() {
+        let note = extract_suffix_note("1  14  Semula wil. Provinsi Papua Barat".to_string());
+        assert!(note.is_some());
+        assert!(note.unwrap().starts_with("Semula"));
     }
 }
