@@ -166,6 +166,18 @@ fn has_reference_indicator(text_lower: &str, pos: usize, window: usize) -> bool 
     false
 }
 
+/// Check whether the keyword match at `pos..pos + kw_len` in `text` is at a word boundary.
+///
+/// A word boundary means the character before the match start and the character
+/// after the match end are not alphanumeric (or the start/end of the string).
+/// This prevents keywords like "ND" from matching inside words like "poNDok".
+fn is_word_boundary(text: &str, pos: usize, kw_len: usize) -> bool {
+    let bytes = text.as_bytes();
+    let before_ok = pos == 0 || !bytes[pos - 1].is_ascii_alphanumeric();
+    let after_ok = pos + kw_len >= text.len() || !bytes[pos + kw_len].is_ascii_alphanumeric();
+    before_ok && after_ok
+}
+
 /// Result of searching for a note keyword in village name text.
 struct NoteMatch {
     /// Byte position where the note keyword starts.
@@ -187,7 +199,9 @@ fn find_note_boundary(raw_lower: &str) -> Option<NoteMatch> {
     for keyword in SELF_VALIDATING_KEYWORDS {
         let kw_lower = keyword.to_lowercase();
         if let Some(pos) = raw_lower.find(&kw_lower) {
-            if best.as_ref().is_none_or(|b| pos < b.pos) {
+            if is_word_boundary(raw_lower, pos, kw_lower.len())
+                && best.as_ref().is_none_or(|b| pos < b.pos)
+            {
                 best = Some(NoteMatch { pos, keyword });
             }
         }
@@ -196,7 +210,8 @@ fn find_note_boundary(raw_lower: &str) -> Option<NoteMatch> {
     for keyword in REFERENCE_VALIDATED_KEYWORDS {
         let kw_lower = keyword.to_lowercase();
         if let Some(pos) = raw_lower.find(&kw_lower) {
-            if has_reference_indicator(raw_lower, pos + kw_lower.len(), 30)
+            if is_word_boundary(raw_lower, pos, kw_lower.len())
+                && has_reference_indicator(raw_lower, pos + kw_lower.len(), 30)
                 && best.as_ref().is_none_or(|b| pos < b.pos)
             {
                 best = Some(NoteMatch { pos, keyword });
@@ -1043,6 +1058,45 @@ C.Kabupaten.1) Kabupaten Bandung Provinsi Jawa Barat
         let raw = "UU JAYA";
         let raw_lower = raw.to_lowercase();
         assert!(find_note_boundary(&raw_lower).is_none());
+    }
+
+    #[test]
+    fn test_is_word_boundary_at_start() {
+        assert!(is_word_boundary("ND Rekom", 0, 2));
+    }
+
+    #[test]
+    fn test_is_word_boundary_at_end() {
+        assert!(is_word_boundary("foo UU", 4, 2));
+    }
+
+    #[test]
+    fn test_is_word_boundary_inside_word() {
+        assert!(!is_word_boundary("poNDok", 2, 2));
+        assert!(!is_word_boundary("bandar", 2, 2));
+    }
+
+    #[test]
+    fn test_find_note_boundary_nd_inside_word_not_matched() {
+        let raw = "pondok kahuru";
+        let raw_lower = raw.to_lowercase();
+        assert!(find_note_boundary(&raw_lower).is_none());
+    }
+
+    #[test]
+    fn test_find_note_boundary_uu_inside_word_not_matched() {
+        let raw = "puuk indah";
+        let raw_lower = raw.to_lowercase();
+        assert!(find_note_boundary(&raw_lower).is_none());
+    }
+
+    #[test]
+    fn test_find_note_boundary_nd_at_word_boundary_still_matched() {
+        let raw = "sukajadi nd rekom no 140/4495/bpd";
+        let raw_lower = raw.to_lowercase();
+        let m = find_note_boundary(&raw_lower);
+        assert!(m.is_some());
+        assert_eq!(m.unwrap().keyword, "ND");
     }
 
     #[test]
