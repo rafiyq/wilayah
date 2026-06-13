@@ -74,6 +74,7 @@ const SELF_VALIDATING_KEYWORDS: &[&str] = &[
     "Penghapusan",
     "Lampiran",
     "Letak",
+    "PMD",
 ];
 
 const REFERENCE_VALIDATED_KEYWORDS: &[&str] = &[
@@ -92,7 +93,6 @@ const REFERENCE_VALIDATED_KEYWORDS: &[&str] = &[
     "Perda",
     "Perbup",
     "Kepbup",
-    "PMD",
     "UU",
     "ND",
     "Surat",
@@ -1058,6 +1058,14 @@ C.Kabupaten.1) Kabupaten Bandung Provinsi Jawa Barat
         let raw = "UU JAYA";
         let raw_lower = raw.to_lowercase();
         assert!(find_note_boundary(&raw_lower).is_none());
+    }
+
+    #[test]
+    fn test_pmd_self_validating_without_reference() {
+        let raw = "desa jaya pmd";
+        let raw_lower = raw.to_lowercase();
+        let m = find_note_boundary(&raw_lower).unwrap();
+        assert_eq!(m.keyword, "PMD");
     }
 
     #[test]
