@@ -67,6 +67,9 @@ pub(crate) struct SectionHeader<'a> {
 ///   E.g., "UU" could appear in a village name like "UU Jaya", but "UU No. 4/2002" is a note.
 const SELF_VALIDATING_KEYWORDS: &[&str] = &[
     "Semula",
+    "Semual",
+    "Semuila",
+    "Smula",
     "Menjadi",
     "Berubah",
     "Penataan",
@@ -93,6 +96,8 @@ const REFERENCE_VALIDATED_KEYWORDS: &[&str] = &[
     "Perda",
     "Perbup",
     "Kepbup",
+    "Berdasarkan",
+    "PP",
     "UU",
     "ND",
     "Surat",
@@ -126,6 +131,7 @@ const REFERENCE_INDICATORS: &[&str] = &[
     "qonun",
     "uu",
     "pmd",
+    "pp",
     "pemekaran",
     "perbaikan",
     "penggabungan",
@@ -139,6 +145,7 @@ const REFERENCE_INDICATORS: &[&str] = &[
     "status",
     "hasil",
     "sebagian",
+    "berdasarkan",
 ];
 
 /// Maximum number of words in an extracted village name.
@@ -318,6 +325,9 @@ pub(crate) fn parse_villages(text: &str) -> Vec<VillageRecord> {
 /// in kecamatan annotation columns.
 const DISTRICT_NOTE_KEYWORDS: &[&str] = &[
     "Semula",
+    "Semual",
+    "Semuila",
+    "Smula",
     "Menjadi",
     "Perbaikan",
     "Pemekaran",
@@ -325,6 +335,8 @@ const DISTRICT_NOTE_KEYWORDS: &[&str] = &[
     "Perda",
     "Perbup",
     "Kepbup",
+    "Berdasarkan",
+    "PP",
     "UU",
     "Qanun",
     "Berubah",
@@ -1066,6 +1078,36 @@ C.Kabupaten.1) Kabupaten Bandung Provinsi Jawa Barat
         let raw_lower = raw.to_lowercase();
         let m = find_note_boundary(&raw_lower).unwrap();
         assert_eq!(m.keyword, "PMD");
+    }
+
+    #[test]
+    fn test_semula_ocr_typo_semual() {
+        let name_re = name_re();
+        let after_code = " 2 RAMBONG Semual wil Kec. Bakongan Perda No. 3/2010";
+        let name = extract_village_name(after_code, name_re);
+        assert_eq!(name.as_ref().map(|e| &e.name), Some(&"RAMBONG".to_string()));
+    }
+
+    #[test]
+    fn test_pp_with_reference() {
+        let name_re = name_re();
+        let after_code = " 2 MEKAR JAYA PP No. 6/2010";
+        let name = extract_village_name(after_code, name_re);
+        assert_eq!(
+            name.as_ref().map(|e| &e.name),
+            Some(&"MEKAR JAYA".to_string())
+        );
+    }
+
+    #[test]
+    fn test_berdasarkan_with_reference() {
+        let name_re = name_re();
+        let after_code = " 3 SUKAMAJU Berdasarkan Perda No. 3/2010";
+        let name = extract_village_name(after_code, name_re);
+        assert_eq!(
+            name.as_ref().map(|e| &e.name),
+            Some(&"SUKAMAJU".to_string())
+        );
     }
 
     #[test]
