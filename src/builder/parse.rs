@@ -349,6 +349,33 @@ const DISTRICT_NOTE_KEYWORDS: &[&str] = &[
 /// Minimum consecutive spaces that indicate a column boundary in pdftotext -layout output.
 const COLUMN_GAP_SPACES: usize = 3;
 
+/// Find the byte position where the first column gap (3+ consecutive spaces) starts.
+///
+/// Returns `Some(pos)` where `pos` is the byte offset of the first space in the
+/// first 3+ consecutive space run. Returns `None` if the text has no column gap.
+///
+/// This is used in `extract_village_name` to detect Format 2 PDF lines where the
+/// village name and annotation text are separated by a wide space gap.
+fn first_gap_position(raw: &str) -> Option<usize> {
+    let bytes = raw.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+    while i < len {
+        if bytes[i] == b' ' {
+            let start = i;
+            while i < len && bytes[i] == b' ' {
+                i += 1;
+            }
+            if i - start >= COLUMN_GAP_SPACES {
+                return Some(start);
+            }
+        } else {
+            i += 1;
+        }
+    }
+    None
+}
+
 /// Split text on 3+ consecutive spaces (the column separator in `pdftotext -layout` output).
 ///
 /// Returns non-empty trimmed parts. For example:
@@ -602,6 +629,19 @@ fn strip_trailing_count(name: &str) -> &str {
 }
 
 /// Extract a village name from the text after the village code, stripping notes.
+///
+/// For Format 2 PDF lines (column-gap layout), the village name occupies the first
+/// column and annotation text appears in subsequent columns separated by 3+ spaces.
+/// Column-gap splitting isolates the name, fixing cases where undetected note keywords
+/// (OCR typos, abbreviations, "Nagari", "Surat", etc.) bleed into the village name.
+///
+/// The algorithm:
+/// 1. Detect column gap (3+ consecutive spaces) in the raw captured text
+/// 2. Find note keyword boundary via `find_note_boundary` on the full raw text
+/// 3. Cut at the earlier of: column-gap position, keyword-boundary position
+///    - If keyword is before the gap: keyword wins (note prefix in name column)
+///    - If gap is before the keyword: gap wins (undetected annotation after gap)
+/// 4. Truncate to `MAX_NAME_WORDS` words
 pub(crate) fn extract_village_name(
     after_code: &str,
     name_re: &regex::Regex,
@@ -613,15 +653,28 @@ pub(crate) fn extract_village_name(
     }
 
     let raw_lower = raw.to_lowercase();
-    let (cleaned, note_keyword, note_boundary) = match find_note_boundary(&raw_lower) {
-        Some(note) => {
-            let cleaned = raw[..note.pos].trim();
-            if cleaned.is_empty() {
-                return None;
-            }
-            (cleaned, Some(note.keyword.to_string()), Some(note.pos))
+    let note_match = find_note_boundary(&raw_lower);
+    let gap_pos = first_gap_position(raw);
+
+    let cleaned = if let Some(gp) = gap_pos {
+        let keyword_pos = note_match.as_ref().map_or(usize::MAX, |n| n.pos);
+        let cut = gp.min(keyword_pos);
+        let c = raw[..cut].trim();
+        if c.is_empty() {
+            return None;
         }
-        None => (raw, None, None),
+        c
+    } else {
+        match &note_match {
+            Some(note) => {
+                let c = raw[..note.pos].trim();
+                if c.is_empty() {
+                    return None;
+                }
+                c
+            }
+            None => raw,
+        }
     };
 
     let truncated: String = cleaned
@@ -638,6 +691,11 @@ pub(crate) fn extract_village_name(
         Some(raw.to_string())
     } else {
         None
+    };
+
+    let (note_keyword, note_boundary) = match note_match {
+        Some(note) => (Some(note.keyword.to_string()), Some(note.pos)),
+        None => (None, None),
     };
 
     Some(ExtractedName {
@@ -1402,5 +1460,127 @@ C.K.1) Kabupaten Bandung Provinsi Jawa Barat
         let note = extract_suffix_note("1  14  Semula wil. Provinsi Papua Barat".to_string());
         assert!(note.is_some());
         assert!(note.unwrap().starts_with("Semula"));
+    }
+
+    #[test]
+    fn test_first_gap_position_with_gap() {
+        assert_eq!(
+            first_gap_position("Ujong Mangki                             Perbaikan nama"),
+            Some(12)
+        );
+    }
+
+    #[test]
+    fn test_first_gap_position_no_gap() {
+        assert_eq!(first_gap_position("Keude Bakongan"), None);
+    }
+
+    #[test]
+    fn test_first_gap_position_two_spaces_not_gap() {
+        assert_eq!(first_gap_position("Hello  World"), None);
+    }
+
+    #[test]
+    fn test_extract_village_name_gap_with_known_keyword() {
+        let name_re = name_re();
+        let after_code =
+            " 1 Ujong Mangki                             Perbaikan nama sesuai Surat Pemkab";
+        let extracted = extract_village_name(after_code, name_re).unwrap();
+        assert_eq!(extracted.name, "Ujong Mangki");
+        assert_eq!(extracted.note_keyword.as_deref(), Some("Perbaikan"));
+    }
+
+    #[test]
+    fn test_extract_village_name_gap_with_nagari_suffix() {
+        let name_re = name_re();
+        let after_code =
+            " 1 Pakan Sinayan                                       Nagari Koto Nan IV";
+        let extracted = extract_village_name(after_code, name_re).unwrap();
+        assert_eq!(extracted.name, "Pakan Sinayan");
+        assert!(extracted.note_keyword.is_none());
+    }
+
+    #[test]
+    fn test_extract_village_name_gap_with_ordinal() {
+        let name_re = name_re();
+        let after_code =
+            " 1 Pasirdoton                         1. Surat Bupati Sukabumi No. 100/609";
+        let extracted = extract_village_name(after_code, name_re).unwrap();
+        assert_eq!(extracted.name, "Pasirdoton");
+        assert_eq!(extracted.note_keyword.as_deref(), Some("Surat"));
+    }
+
+    #[test]
+    fn test_extract_village_name_gap_with_surat_prefix() {
+        let name_re = name_re();
+        let after_code =
+            " 1 Rancaran                      Surat Bup. Padang Lawas Utara No. 141/1154";
+        let extracted = extract_village_name(after_code, name_re).unwrap();
+        assert_eq!(extracted.name, "Rancaran");
+        assert_eq!(extracted.note_keyword.as_deref(), Some("Surat"));
+    }
+
+    #[test]
+    fn test_extract_village_name_gap_keyword_in_name_column() {
+        let name_re = name_re();
+        let after_code =
+            " 2 Matang Rayeuk PP                   Semula wil. Kec Idi Rayeuk, Perbaikan nama";
+        let extracted = extract_village_name(after_code, name_re).unwrap();
+        assert_eq!(extracted.name, "Matang Rayeuk");
+    }
+
+    #[test]
+    fn test_extract_village_name_gap_no_keyword_clean_name() {
+        let name_re = name_re();
+        let after_code = " 1 Gelombang                    Semua wil. Kec. Takeran";
+        let extracted = extract_village_name(after_code, name_re).unwrap();
+        assert_eq!(extracted.name, "Gelombang");
+    }
+
+    #[test]
+    fn test_extract_village_name_gap_with_penggabungan() {
+        let name_re = name_re();
+        let after_code =
+            " 1 Tanjuanggodang                                Penggabungan Kel. Tanjuang Gadang dan Kel. Sungai Pinago";
+        let extracted = extract_village_name(after_code, name_re).unwrap();
+        assert_eq!(extracted.name, "Tanjuanggodang");
+    }
+
+    #[test]
+    fn test_extract_village_name_no_gap_keyword_only() {
+        let name_re = name_re();
+        let after_code = " 2 RAMBONG Semula wil Kec. Bakongan";
+        let extracted = extract_village_name(after_code, name_re).unwrap();
+        assert_eq!(extracted.name, "RAMBONG");
+        assert_eq!(extracted.note_keyword.as_deref(), Some("Semula"));
+    }
+
+    #[test]
+    fn test_extract_village_name_no_gap_no_keyword() {
+        let name_re = name_re();
+        let after_code = " 12 ABADIJAYA";
+        let extracted = extract_village_name(after_code, name_re).unwrap();
+        assert_eq!(extracted.name, "ABADIJAYA");
+        assert!(extracted.note_keyword.is_none());
+    }
+
+    #[test]
+    fn test_extract_village_name_gap_preserves_existing_keyword_detection() {
+        let name_re = name_re();
+        let after_code =
+            " 1 Seuneubok Keuranji                  Semula wil Kec.Bakongan Perda No.3/2010";
+        let extracted = extract_village_name(after_code, name_re).unwrap();
+        assert_eq!(extracted.name, "Seuneubok Keuranji");
+        assert_eq!(extracted.note_keyword.as_deref(), Some("Semula"));
+    }
+
+    #[test]
+    fn test_extract_village_name_gap_lowercase_perbaikan() {
+        let name_re = name_re();
+        let after_code =
+            " 1 Teluk Latak                            Perbaikan Spasi, Berdasarka Ketua KPU Bengkalis No Surat";
+        let extracted = extract_village_name(after_code, name_re).unwrap();
+        assert_eq!(extracted.name, "Teluk Latak");
+        assert!(extracted.note_keyword.is_none());
     }
 }
