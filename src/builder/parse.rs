@@ -628,6 +628,37 @@ fn strip_trailing_count(name: &str) -> &str {
     trimmed
 }
 
+fn strip_trailing_period(name: &mut String) {
+    if !name.ends_with('.') {
+        return;
+    }
+    let before_period = &name[..name.len() - 1];
+    let last_word = before_period.split_whitespace().last().unwrap_or("");
+    if last_word.len() >= 4 {
+        name.truncate(name.len() - 1);
+    }
+}
+
+fn capitalize_all_lowercase(name: &mut String) {
+    if name.is_empty() || !name.chars().all(|c| !c.is_uppercase()) {
+        return;
+    }
+    let mut result = String::with_capacity(name.len());
+    let mut capitalize_next = true;
+    for c in name.chars() {
+        if c == ' ' {
+            capitalize_next = true;
+            result.push(c);
+        } else if capitalize_next {
+            result.extend(c.to_uppercase());
+            capitalize_next = false;
+        } else {
+            result.push(c);
+        }
+    }
+    *name = result;
+}
+
 /// Extract a village name from the text after the village code, stripping notes.
 ///
 /// For Format 2 PDF lines (column-gap layout), the village name occupies the first
@@ -677,7 +708,7 @@ pub(crate) fn extract_village_name(
         }
     };
 
-    let truncated: String = cleaned
+    let mut truncated: String = cleaned
         .split_whitespace()
         .take(MAX_NAME_WORDS)
         .collect::<Vec<_>>()
@@ -686,6 +717,9 @@ pub(crate) fn extract_village_name(
     if truncated.is_empty() {
         return None;
     }
+
+    strip_trailing_period(&mut truncated);
+    capitalize_all_lowercase(&mut truncated);
 
     let raw_name = if truncated != raw {
         Some(raw.to_string())
@@ -1582,5 +1616,82 @@ C.K.1) Kabupaten Bandung Provinsi Jawa Barat
         let extracted = extract_village_name(after_code, name_re).unwrap();
         assert_eq!(extracted.name, "Teluk Latak");
         assert!(extracted.note_keyword.is_none());
+    }
+
+    #[test]
+    fn test_strip_trailing_period_long_word() {
+        let mut s = String::from("Air Sialang Hilir.");
+        strip_trailing_period(&mut s);
+        assert_eq!(s, "Air Sialang Hilir");
+    }
+
+    #[test]
+    fn test_strip_trailing_period_four_char_word() {
+        let mut s = String::from("U Baro.");
+        strip_trailing_period(&mut s);
+        assert_eq!(s, "U Baro");
+    }
+
+    #[test]
+    fn test_strip_trailing_period_preserves_short_abbreviation() {
+        let mut s = String::from("Papuyu I Sei.");
+        strip_trailing_period(&mut s);
+        assert_eq!(s, "Papuyu I Sei.");
+    }
+
+    #[test]
+    fn test_strip_trailing_period_preserves_single_char() {
+        let mut s = String::from("Pardomuan J.");
+        strip_trailing_period(&mut s);
+        assert_eq!(s, "Pardomuan J.");
+    }
+
+    #[test]
+    fn test_strip_trailing_period_preserves_two_char() {
+        let mut s = String::from("Bedeng SS.");
+        strip_trailing_period(&mut s);
+        assert_eq!(s, "Bedeng SS.");
+    }
+
+    #[test]
+    fn test_strip_trailing_period_no_period() {
+        let mut s = String::from("Suka Maju");
+        strip_trailing_period(&mut s);
+        assert_eq!(s, "Suka Maju");
+    }
+
+    #[test]
+    fn test_capitalize_all_lowercase_single_word() {
+        let mut s = String::from("lamuk");
+        capitalize_all_lowercase(&mut s);
+        assert_eq!(s, "Lamuk");
+    }
+
+    #[test]
+    fn test_capitalize_all_lowercase_multi_word() {
+        let mut s = String::from("suka maju");
+        capitalize_all_lowercase(&mut s);
+        assert_eq!(s, "Suka Maju");
+    }
+
+    #[test]
+    fn test_capitalize_all_lowercase_preserves_mixed_case() {
+        let mut s = String::from("Suka Maju");
+        capitalize_all_lowercase(&mut s);
+        assert_eq!(s, "Suka Maju");
+    }
+
+    #[test]
+    fn test_capitalize_all_lowercase_preserves_uppercase() {
+        let mut s = String::from("ABADIJAYA");
+        capitalize_all_lowercase(&mut s);
+        assert_eq!(s, "ABADIJAYA");
+    }
+
+    #[test]
+    fn test_capitalize_all_lowercase_empty() {
+        let mut s = String::from("");
+        capitalize_all_lowercase(&mut s);
+        assert_eq!(s, "");
     }
 }
