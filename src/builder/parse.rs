@@ -308,6 +308,46 @@ impl VillageParser {
         }
 
         eprintln!("Parsed {} villages", villages.len());
+
+        let lowercase_note_prefixes = [
+            "semula",
+            "semual",
+            "semuila",
+            "smula",
+            "menjadi",
+            "perbaikan",
+            "pemekaran",
+            "koreksi",
+            "perda",
+            "perbup",
+            "kepbup",
+            "berdasarkan",
+            "pp",
+            "uu",
+            "qanun",
+            "berubah",
+            "penataan",
+            "penghapusan",
+            "penggabungan",
+            "pembentukan",
+        ];
+
+        for v in &mut villages {
+            if let Some(ref note) = v.district_note {
+                let note_bytes = note.as_bytes();
+                if note_bytes.first().is_none_or(|c| c.is_ascii_lowercase()) {
+                    let note_lower = note.to_lowercase();
+                    let is_real_note = lowercase_note_prefixes
+                        .iter()
+                        .any(|kw| note_lower.starts_with(kw));
+                    if !is_real_note {
+                        v.district = format!("{}{}", v.district, note);
+                        v.district_note = None;
+                    }
+                }
+            }
+        }
+
         villages
     }
 }
@@ -494,6 +534,9 @@ fn strip_district_note(name: &str) -> (&str, Option<String>) {
     for keyword in DISTRICT_NOTE_KEYWORDS {
         let kw_lower = keyword.to_lowercase();
         if let Some(pos) = name_lower.find(&kw_lower) {
+            if !is_word_boundary(&name_lower, pos, kw_lower.len()) {
+                continue;
+            }
             let cleaned = name[..pos].trim();
             if !cleaned.is_empty() {
                 let note_text = name[pos..].trim().to_string();
@@ -515,7 +558,13 @@ fn extract_suffix_note(suffix: String) -> Option<String> {
         .iter()
         .filter_map(|kw| {
             let kw_lower = kw.to_lowercase();
-            suffix_lower.find(&kw_lower).map(|pos| (pos, kw))
+            suffix_lower.find(&kw_lower).and_then(|pos| {
+                if is_word_boundary(&suffix_lower, pos, kw_lower.len()) {
+                    Some((pos, kw))
+                } else {
+                    None
+                }
+            })
         })
         .min_by_key(|(pos, _)| *pos);
 
@@ -1693,5 +1742,104 @@ C.K.1) Kabupaten Bandung Provinsi Jawa Barat
         let mut s = String::from("");
         capitalize_all_lowercase(&mut s);
         assert_eq!(s, "");
+    }
+
+    #[test]
+    fn test_district_name_banyuurip_fmt2() {
+        let result = extract_district_name("33.06.07                                        7 Banyuurip                             3                           24");
+        assert_eq!(result.name, "Banyuurip");
+        assert!(result.note.is_none());
+    }
+
+    #[test]
+    fn test_district_name_mappakasunggu_fmt1() {
+        let result = extract_district_name("     73.05.01        1 Mappakasunggu                                                      1         3");
+        assert_eq!(result.name, "Mappakasunggu");
+        assert!(result.note.is_none());
+    }
+
+    #[test]
+    fn test_district_name_mappakasunggu_fmt2() {
+        let result = extract_district_name("73.05.01                                                     1 Mappakasunggu                                  1                        3");
+        assert_eq!(result.name, "Mappakasunggu");
+        assert!(result.note.is_none());
+    }
+
+    #[test]
+    fn test_district_name_proppo_fmt2() {
+        let result = extract_district_name("35.28.05                                        5 Proppo                        -                          27");
+        assert_eq!(result.name, "Proppo");
+        assert!(result.note.is_none());
+    }
+
+    #[test]
+    fn test_district_name_puuwatu_fmt2() {
+        let result = extract_district_name("74.71.09                                        9 Puuwatu                                6          -");
+        assert_eq!(result.name, "Puuwatu");
+        assert!(result.note.is_none());
+    }
+
+    #[test]
+    fn test_district_name_lalembuu() {
+        let result = extract_district_name(
+            "74.03.02  1 Lalembuu                        18                        -",
+        );
+        assert_eq!(result.name, "Lalembuu");
+        assert!(result.note.is_none());
+    }
+
+    #[test]
+    fn test_district_name_batulappa() {
+        let result = extract_district_name(
+            "73.11.05  5 Batulappa                        5                        -",
+        );
+        assert_eq!(result.name, "Batulappa");
+        assert!(result.note.is_none());
+    }
+
+    #[test]
+    fn test_district_name_soppeng_riaja() {
+        let result = extract_district_name(
+            "73.09.05  7 Soppeng Riaja                        7                        -",
+        );
+        assert_eq!(result.name, "Soppeng Riaja");
+        assert!(result.note.is_none());
+    }
+
+    #[test]
+    fn test_district_name_suluun_tareran() {
+        let result = extract_district_name(
+            "71.05.09  9 Suluun Tareran                        9                        -",
+        );
+        assert_eq!(result.name, "Suluun Tareran");
+        assert!(result.note.is_none());
+    }
+
+    #[test]
+    fn test_district_name_baruppu() {
+        let result = extract_district_name(
+            "73.21.04  4 Baruppu                        4                        -",
+        );
+        assert_eq!(result.name, "Baruppu");
+        assert!(result.note.is_none());
+    }
+
+    #[test]
+    fn test_strip_district_note_word_boundary() {
+        let (name, note) = strip_district_note("Banyuurip");
+        assert_eq!(name, "Banyuurip");
+        assert!(note.is_none());
+
+        let (name, note) = strip_district_note("Mappakasunggu");
+        assert_eq!(name, "Mappakasunggu");
+        assert!(note.is_none());
+
+        let (name, note) = strip_district_note("Abenaho Semula wil Prov.");
+        assert_eq!(name, "Abenaho");
+        assert_eq!(note.as_deref(), Some("Semula wil Prov."));
+
+        let (name, note) = strip_district_note("Makbon Semula Berdasarkan PP 22");
+        assert_eq!(name, "Makbon");
+        assert!(note.is_some());
     }
 }
