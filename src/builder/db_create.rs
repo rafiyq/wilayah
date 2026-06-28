@@ -394,6 +394,9 @@ mod tests {
             note_keyword: None,
             note_boundary: None,
             district_note: None,
+            kel_count: None,
+            desa_count: None,
+            keterangan: None,
         }
     }
 

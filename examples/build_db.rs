@@ -100,6 +100,9 @@ fn main() {
             if let Some(parsed) = &output.parsed_villages_path {
                 println!("Parsed villages: {}", parsed.display());
             }
+            if let Some(dist) = &output.parsed_districts_path {
+                println!("Parsed districts: {}", dist.display());
+            }
             println!("Villages: {}", output.village_count);
             println!("SHA-256: {}", output.sha256);
 

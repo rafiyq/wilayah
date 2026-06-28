@@ -18,6 +18,12 @@ pub(crate) struct VillageRecord {
     pub(crate) note_boundary: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) district_note: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) kel_count: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) desa_count: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) keterangan: Option<String>,
 }
 
 /// How much detail to include when saving parsed village records to JSON.
@@ -42,6 +48,8 @@ pub(crate) struct ExtractedName {
     pub(crate) note_keyword: Option<String>,
     /// The byte position where the note boundary was found.
     pub(crate) note_boundary: Option<usize>,
+    /// The full annotation text from the village line (text after column gap following the name).
+    pub(crate) keterangan: Option<String>,
 }
 
 /// Result of extracting a district name from a kecamatan line in PDF text.
@@ -50,6 +58,25 @@ pub(crate) struct ExtractedDistrict {
     pub(crate) name: String,
     /// Annotation text from the kecamatan line (e.g., "Semula wil. Provinsi Papua Barat; UU No. 16 Tahun 2025").
     pub(crate) note: Option<String>,
+    /// Number of kelurahan in this kecamatan (0 if explicitly "-").
+    pub(crate) kel_count: Option<u32>,
+    /// Number of desa in this kecamatan (0 if explicitly "-").
+    pub(crate) desa_count: Option<u32>,
+}
+
+/// A parsed district (kecamatan) record for JSON output.
+#[derive(serde::Serialize, Clone)]
+pub(crate) struct DistrictRecord {
+    pub(crate) code: String,
+    pub(crate) name: String,
+    pub(crate) city: String,
+    pub(crate) province: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) district_note: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) kel_count: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) desa_count: Option<u32>,
 }
 
 /// A parsed section header from the PDF (province + city grouping).
@@ -263,6 +290,8 @@ impl VillageParser {
         let mut current_district_code = String::new();
         let mut current_district_name = String::new();
         let mut current_district_note: Option<String> = None;
+        let mut current_kel_count: Option<u32> = None;
+        let mut current_desa_count: Option<u32> = None;
 
         for line in text.lines() {
             if let Some(header) = parse_section_header(line, &self.section_header_re) {
@@ -271,6 +300,9 @@ impl VillageParser {
                 current_district_code.clear();
                 current_district_name.clear();
                 current_district_note = None;
+                current_kel_count = None;
+                current_desa_count = None;
+                continue;
             }
 
             if let Some(cap) = self.kecamatan_code_re.captures(line) {
@@ -279,6 +311,8 @@ impl VillageParser {
                 let extracted = extract_district_name(after_prefix);
                 current_district_name = extracted.name;
                 current_district_note = extracted.note;
+                current_kel_count = extracted.kel_count;
+                current_desa_count = extracted.desa_count;
                 continue;
             }
 
@@ -302,7 +336,20 @@ impl VillageParser {
                         note_keyword: extracted.note_keyword,
                         note_boundary: extracted.note_boundary,
                         district_note: current_district_note.clone(),
+                        kel_count: current_kel_count,
+                        desa_count: current_desa_count,
+                        keterangan: extracted.keterangan,
                     });
+                }
+                continue;
+            }
+
+            if let Some(cont) = is_keterangan_continuation(line) {
+                if let Some(last) = villages.last_mut() {
+                    if let Some(ref mut kt) = last.keterangan {
+                        kt.push(' ');
+                        kt.push_str(&cont);
+                    }
                 }
             }
         }
@@ -359,6 +406,28 @@ pub(crate) fn parse_villages(text: &str) -> Vec<VillageRecord> {
     VillageParser::new().parse(text)
 }
 
+/// Extract unique district (kecamatan) records from parsed village records.
+///
+/// Each district appears once, with its kel/desa counts and optional district_note.
+pub(crate) fn extract_districts(villages: &[VillageRecord]) -> Vec<DistrictRecord> {
+    let mut seen = std::collections::HashSet::new();
+    let mut districts = Vec::new();
+    for v in villages {
+        if seen.insert(v.code[..8].to_string()) {
+            districts.push(DistrictRecord {
+                code: v.code[..8].to_string(),
+                name: v.district.clone(),
+                city: v.city.clone(),
+                province: v.province.clone(),
+                district_note: v.district_note.clone(),
+                kel_count: v.kel_count,
+                desa_count: v.desa_count,
+            });
+        }
+    }
+    districts
+}
+
 /// Note keywords to look for in district name suffixes (after column splitting).
 ///
 /// These are a subset of village note keywords — only ones that commonly appear
@@ -396,6 +465,34 @@ const COLUMN_GAP_SPACES: usize = 3;
 ///
 /// This is used in `extract_village_name` to detect Format 2 PDF lines where the
 /// village name and annotation text are separated by a wide space gap.
+/// Detect a keterangan continuation line in the PDF text.
+///
+/// Keterangan continuation lines are deeply indented (20+ leading spaces) and
+/// contain annotation text that continues from the previous village line.
+/// They do not start with a village code or a number in the first 10 characters.
+/// Form-feed characters (page breaks) indicate non-continuation lines.
+fn is_keterangan_continuation(line: &str) -> Option<String> {
+    let trimmed = line.trim_end();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.starts_with('\x0c') {
+        return None;
+    }
+    let leading = line.len() - line.trim_start().len();
+    if leading < 20 {
+        return None;
+    }
+    let content = trimmed.trim_start();
+    if content.is_empty() {
+        return None;
+    }
+    if content.starts_with(|c: char| c.is_ascii_digit()) {
+        return None;
+    }
+    Some(content.to_string())
+}
+
 fn first_gap_position(raw: &str) -> Option<usize> {
     let bytes = raw.as_bytes();
     let len = bytes.len();
@@ -513,8 +610,12 @@ fn extract_district_name(after_prefix: &str) -> ExtractedDistrict {
     let (cleaned_name, name_note) = strip_district_note(stripped);
 
     let suffix_parts: Vec<&str> = parts[suffix_start.min(parts.len())..].to_vec();
-    let suffix_note = if !suffix_parts.is_empty() {
-        extract_suffix_note(suffix_parts.join(" "))
+
+    let (kel_count, desa_count, note_suffix_start) = parse_suffix_counts(&suffix_parts);
+
+    let remaining_suffix: Vec<&str> = suffix_parts[note_suffix_start..].to_vec();
+    let suffix_note = if !remaining_suffix.is_empty() {
+        extract_suffix_note(remaining_suffix.join(" "))
     } else {
         None
     };
@@ -524,6 +625,8 @@ fn extract_district_name(after_prefix: &str) -> ExtractedDistrict {
     ExtractedDistrict {
         name: cleaned_name.to_string(),
         note,
+        kel_count,
+        desa_count,
     }
 }
 
@@ -569,6 +672,43 @@ fn extract_suffix_note(suffix: String) -> Option<String> {
         .min_by_key(|(pos, _)| *pos);
 
     earliest.map(|(pos, _)| suffix[pos..].trim().to_string())
+}
+
+/// Parse kel/desa counts from the suffix parts after the district name.
+///
+/// Suffix parts come from `split_on_column_gap` after the name column. The format is:
+/// - Listing (format 2): `["-", "7"]` or `["6", "-"]` or `["2", "14"]`
+///   First is KEL count (or "-" for 0), second is DESA count (or "-" for 0)
+/// - Header (format 1): `["7"]` — single count (desa for kabupaten, kel for kota)
+/// - With note: `["-", "14", "Semula", "wil.", "Provinsi..."]` — counts first, then note text
+///
+/// Returns `(kel_count, desa_count, note_start_index)` where counts are None if not found,
+/// and `note_start_index` is the index into suffix_parts where non-count text begins.
+fn parse_suffix_counts(suffix_parts: &[&str]) -> (Option<u32>, Option<u32>, usize) {
+    if suffix_parts.is_empty() {
+        return (None, None, 0);
+    }
+
+    let parse_count = |s: &str| -> Option<u32> {
+        if s == "-" {
+            Some(0)
+        } else {
+            s.parse::<u32>().ok()
+        }
+    };
+
+    let first = parse_count(suffix_parts[0]);
+
+    if let Some(kel) = first {
+        if suffix_parts.len() > 1 {
+            if let Some(desa) = parse_count(suffix_parts[1]) {
+                return (Some(kel), Some(desa), 2);
+            }
+        }
+        return (Some(kel), None, 1);
+    }
+
+    (None, None, 0)
 }
 
 /// Skip the code and number prefix in a kecamatan line to get to the name.
@@ -736,14 +876,29 @@ pub(crate) fn extract_village_name(
     let note_match = find_note_boundary(&raw_lower);
     let gap_pos = first_gap_position(raw);
 
-    let cleaned = if let Some(gp) = gap_pos {
+    let (cleaned, keterangan_text) = if let Some(gp) = gap_pos {
         let keyword_pos = note_match.as_ref().map_or(usize::MAX, |n| n.pos);
-        let cut = gp.min(keyword_pos);
-        let c = raw[..cut].trim();
-        if c.is_empty() {
-            return None;
+        if keyword_pos < gp {
+            let c = raw[..keyword_pos].trim();
+            if c.is_empty() {
+                return None;
+            }
+            (c, Some(raw[keyword_pos..].trim().to_string()))
+        } else {
+            let c = raw[..gp].trim();
+            if c.is_empty() {
+                return None;
+            }
+            let tail = raw[gp..].trim();
+            (
+                c,
+                if tail.is_empty() {
+                    None
+                } else {
+                    Some(tail.to_string())
+                },
+            )
         }
-        c
     } else {
         match &note_match {
             Some(note) => {
@@ -751,9 +906,9 @@ pub(crate) fn extract_village_name(
                 if c.is_empty() {
                     return None;
                 }
-                c
+                (c, Some(raw[note.pos..].trim().to_string()))
             }
-            None => raw,
+            None => (raw, None),
         }
     };
 
@@ -786,6 +941,7 @@ pub(crate) fn extract_village_name(
         raw_name,
         note_keyword,
         note_boundary,
+        keterangan: keterangan_text,
     })
 }
 
@@ -812,7 +968,7 @@ pub(crate) fn parse_section_header<'a>(
 ///
 /// The level of detail is controlled by `detail`:
 /// - `Minimal`: code + cleaned name + district + city + province
-/// - `WithRawName`: adds `raw_name` field (original text before note stripping)
+/// - `WithRawName`: adds `raw_name`, `district_note`, `kel_count`, `desa_count`, `keterangan` fields
 /// - `Full`: adds `note_keyword` and `note_boundary` fields
 pub(crate) fn save_parsed_villages(
     villages: &[VillageRecord],
@@ -833,6 +989,9 @@ pub(crate) fn save_parsed_villages(
                 note_keyword: None,
                 note_boundary: None,
                 district_note: None,
+                kel_count: None,
+                desa_count: None,
+                keterangan: None,
             },
             ParseOutputDetail::WithRawName => VillageRecord {
                 code: v.code.clone(),
@@ -844,6 +1003,9 @@ pub(crate) fn save_parsed_villages(
                 note_keyword: None,
                 note_boundary: None,
                 district_note: v.district_note.clone(),
+                kel_count: v.kel_count,
+                desa_count: v.desa_count,
+                keterangan: v.keterangan.clone(),
             },
             ParseOutputDetail::Full => v.clone(),
         })
@@ -853,6 +1015,19 @@ pub(crate) fn save_parsed_villages(
         serde_json::to_string_pretty(&output).ctx("failed to serialize parsed villages")?;
     std::fs::write(path, json_str).ctx("failed to write parsed villages JSON")?;
     eprintln!("Saved {} parsed villages to {:?}", villages.len(), path);
+    Ok(())
+}
+
+/// Save parsed district (kecamatan) records to a JSON file.
+pub(crate) fn save_parsed_districts(
+    districts: &[DistrictRecord],
+    path: &Path,
+) -> Result<(), super::PipelineError> {
+    use super::PipelineResultExt;
+    let json_str =
+        serde_json::to_string_pretty(districts).ctx("failed to serialize parsed districts")?;
+    std::fs::write(path, json_str).ctx("failed to write parsed districts JSON")?;
+    eprintln!("Saved {} parsed districts to {:?}", districts.len(), path);
     Ok(())
 }
 
@@ -1379,6 +1554,9 @@ C.K.1) Kabupaten Bandung Provinsi Jawa Barat
             note_keyword: None,
             note_boundary: None,
             district_note: None,
+            kel_count: None,
+            desa_count: None,
+            keterangan: None,
         }];
         let dir = std::env::temp_dir().join("wilayah_test_parse_minimal");
         std::fs::create_dir_all(&dir).unwrap();
@@ -1405,6 +1583,9 @@ C.K.1) Kabupaten Bandung Provinsi Jawa Barat
             note_keyword: Some("Semula".to_string()),
             note_boundary: Some(8),
             district_note: None,
+            kel_count: Some(0),
+            desa_count: Some(7),
+            keterangan: Some("Semula wil Kec. Bakongan".to_string()),
         }];
         let dir = std::env::temp_dir().join("wilayah_test_parse_raw");
         std::fs::create_dir_all(&dir).unwrap();
@@ -1414,6 +1595,9 @@ C.K.1) Kabupaten Bandung Provinsi Jawa Barat
         let parsed: Vec<serde_json::Value> = serde_json::from_str(&content).unwrap();
         assert_eq!(parsed[0]["raw_name"], "RAMBONG Semula wil Kec. Bakongan");
         assert!(parsed[0].get("note_keyword").is_none());
+        assert_eq!(parsed[0]["kel_count"], 0);
+        assert_eq!(parsed[0]["desa_count"], 7);
+        assert_eq!(parsed[0]["keterangan"], "Semula wil Kec. Bakongan");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1429,6 +1613,9 @@ C.K.1) Kabupaten Bandung Provinsi Jawa Barat
             note_keyword: Some("Semula".to_string()),
             note_boundary: Some(8),
             district_note: None,
+            kel_count: Some(0),
+            desa_count: Some(7),
+            keterangan: Some("Semula wil Kec. Bakongan".to_string()),
         }];
         let dir = std::env::temp_dir().join("wilayah_test_parse_full");
         std::fs::create_dir_all(&dir).unwrap();
@@ -1439,6 +1626,9 @@ C.K.1) Kabupaten Bandung Provinsi Jawa Barat
         assert_eq!(parsed[0]["raw_name"], "RAMBONG Semula wil Kec. Bakongan");
         assert_eq!(parsed[0]["note_keyword"], "Semula");
         assert_eq!(parsed[0]["note_boundary"], 8);
+        assert_eq!(parsed[0]["kel_count"], 0);
+        assert_eq!(parsed[0]["desa_count"], 7);
+        assert_eq!(parsed[0]["keterangan"], "Semula wil Kec. Bakongan");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1841,5 +2031,272 @@ C.K.1) Kabupaten Bandung Provinsi Jawa Barat
         let (name, note) = strip_district_note("Makbon Semula Berdasarkan PP 22");
         assert_eq!(name, "Makbon");
         assert!(note.is_some());
+    }
+
+    #[test]
+    fn test_parse_suffix_counts_empty() {
+        let (kel, desa, start) = parse_suffix_counts(&[]);
+        assert_eq!(kel, None);
+        assert_eq!(desa, None);
+        assert_eq!(start, 0);
+    }
+
+    #[test]
+    fn test_parse_suffix_counts_kabupaten() {
+        let (kel, desa, start) = parse_suffix_counts(&["-", "7"]);
+        assert_eq!(kel, Some(0));
+        assert_eq!(desa, Some(7));
+        assert_eq!(start, 2);
+    }
+
+    #[test]
+    fn test_parse_suffix_counts_kota() {
+        let (kel, desa, start) = parse_suffix_counts(&["6", "-"]);
+        assert_eq!(kel, Some(6));
+        assert_eq!(desa, Some(0));
+        assert_eq!(start, 2);
+    }
+
+    #[test]
+    fn test_parse_suffix_counts_both_nonzero() {
+        let (kel, desa, start) = parse_suffix_counts(&["2", "14"]);
+        assert_eq!(kel, Some(2));
+        assert_eq!(desa, Some(14));
+        assert_eq!(start, 2);
+    }
+
+    #[test]
+    fn test_parse_suffix_counts_single_count() {
+        let (kel, desa, start) = parse_suffix_counts(&["7"]);
+        assert_eq!(kel, Some(7));
+        assert_eq!(desa, None);
+        assert_eq!(start, 1);
+    }
+
+    #[test]
+    fn test_parse_suffix_counts_with_note() {
+        let (kel, desa, start) = parse_suffix_counts(&["-", "14", "Semula", "wil."]);
+        assert_eq!(kel, Some(0));
+        assert_eq!(desa, Some(14));
+        assert_eq!(start, 2);
+    }
+
+    #[test]
+    fn test_parse_suffix_counts_non_numeric_prefix() {
+        let (kel, desa, start) = parse_suffix_counts(&["Semula", "wil."]);
+        assert_eq!(kel, None);
+        assert_eq!(desa, None);
+        assert_eq!(start, 0);
+    }
+
+    #[test]
+    fn test_extract_district_name_kabupaten_counts() {
+        let result = extract_district_name(
+            "11.01.01 1 Bakongan                       -                             7",
+        );
+        assert_eq!(result.name, "Bakongan");
+        assert_eq!(result.kel_count, Some(0));
+        assert_eq!(result.desa_count, Some(7));
+    }
+
+    #[test]
+    fn test_extract_district_name_kota_counts() {
+        let result = extract_district_name(
+            "31.71.01 1 Gambir                                       6           -",
+        );
+        assert_eq!(result.name, "Gambir");
+        assert_eq!(result.kel_count, Some(6));
+        assert_eq!(result.desa_count, Some(0));
+    }
+
+    #[test]
+    fn test_extract_district_name_counts_with_note() {
+        let result = extract_district_name(
+            "96.01.01 1 Makbon                       -                            14    Semula wil. Provinsi Papua Barat",
+        );
+        assert_eq!(result.name, "Makbon");
+        assert_eq!(result.kel_count, Some(0));
+        assert_eq!(result.desa_count, Some(14));
+        assert!(result.note.is_some());
+    }
+
+    #[test]
+    fn test_is_keterangan_continuation_deep_indent() {
+        let line = "                                                                     tgl 14 okt 2016 dan Rekomedasi Ditjen Bina Pemdes No. 146/3672/BPD";
+        let result = is_keterangan_continuation(line);
+        assert!(result.is_some());
+        assert_eq!(
+            result.unwrap(),
+            "tgl 14 okt 2016 dan Rekomedasi Ditjen Bina Pemdes No. 146/3672/BPD"
+        );
+    }
+
+    #[test]
+    fn test_is_keterangan_continuation_shallow_indent() {
+        let line = "   not deep enough";
+        assert!(is_keterangan_continuation(line).is_none());
+    }
+
+    #[test]
+    fn test_is_keterangan_continuation_village_code() {
+        let line =
+            "                                                                     11.01.01.2003";
+        assert!(is_keterangan_continuation(line).is_none());
+    }
+
+    #[test]
+    fn test_is_keterangan_continuation_empty() {
+        assert!(is_keterangan_continuation("").is_none());
+        assert!(is_keterangan_continuation("                    ").is_none());
+    }
+
+    #[test]
+    fn test_extract_village_name_keterangan() {
+        let re = name_re();
+        let result = extract_village_name(
+            "   2   Ujong Mangki                             Perbaikan nama sesuai Surat Pemkab Aceh Selatan No.140/819/2016",
+            re,
+        );
+        assert!(result.is_some());
+        let r = result.unwrap();
+        assert_eq!(r.name, "Ujong Mangki");
+        assert_eq!(
+            r.keterangan.as_deref(),
+            Some("Perbaikan nama sesuai Surat Pemkab Aceh Selatan No.140/819/2016")
+        );
+    }
+
+    #[test]
+    fn test_extract_village_name_no_keterangan() {
+        let re = name_re();
+        let result = extract_village_name("   1   Keude Bakongan", re);
+        assert!(result.is_some());
+        let r = result.unwrap();
+        assert_eq!(r.name, "Keude Bakongan");
+        assert!(r.keterangan.is_none());
+    }
+
+    #[test]
+    fn test_extract_districts() {
+        let villages = vec![
+            VillageRecord {
+                code: "11.01.01.2001".to_string(),
+                name: "Keude Bakongan".to_string(),
+                district: "Bakongan".to_string(),
+                city: "Aceh Selatan".to_string(),
+                province: "Aceh".to_string(),
+                raw_name: None,
+                note_keyword: None,
+                note_boundary: None,
+                district_note: None,
+                kel_count: Some(0),
+                desa_count: Some(7),
+                keterangan: None,
+            },
+            VillageRecord {
+                code: "11.01.01.2002".to_string(),
+                name: "Ujong Mangki".to_string(),
+                district: "Bakongan".to_string(),
+                city: "Aceh Selatan".to_string(),
+                province: "Aceh".to_string(),
+                raw_name: None,
+                note_keyword: None,
+                note_boundary: None,
+                district_note: None,
+                kel_count: Some(0),
+                desa_count: Some(7),
+                keterangan: None,
+            },
+            VillageRecord {
+                code: "11.01.02.2001".to_string(),
+                name: "Fajar Harapan".to_string(),
+                district: "Kluet Utara".to_string(),
+                city: "Aceh Selatan".to_string(),
+                province: "Aceh".to_string(),
+                raw_name: None,
+                note_keyword: None,
+                note_boundary: None,
+                district_note: None,
+                kel_count: Some(0),
+                desa_count: Some(21),
+                keterangan: None,
+            },
+        ];
+        let districts = extract_districts(&villages);
+        assert_eq!(districts.len(), 2);
+        assert_eq!(districts[0].code, "11.01.01");
+        assert_eq!(districts[0].name, "Bakongan");
+        assert_eq!(districts[0].kel_count, Some(0));
+        assert_eq!(districts[0].desa_count, Some(7));
+        assert_eq!(districts[1].code, "11.01.02");
+        assert_eq!(districts[1].name, "Kluet Utara");
+        assert_eq!(districts[1].desa_count, Some(21));
+    }
+
+    #[test]
+    #[ignore]
+    fn test_parse_real_pdf_functional() {
+        let text = match std::fs::read_to_string("/tmp/wilayah/pdf_text.txt") {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+        let villages = parse_villages(&text);
+
+        let with_kel = villages.iter().filter(|v| v.kel_count.is_some()).count();
+        let with_desa = villages.iter().filter(|v| v.desa_count.is_some()).count();
+        let with_ket = villages.iter().filter(|v| v.keterangan.is_some()).count();
+        let with_long_ket = villages
+            .iter()
+            .filter(|v| v.keterangan.as_ref().map_or(false, |k| k.len() > 80))
+            .count();
+
+        eprintln!(
+            "Total: {}  kel: {}  desa: {}  ket: {}  long_ket: {}",
+            villages.len(),
+            with_kel,
+            with_desa,
+            with_ket,
+            with_long_ket
+        );
+
+        assert_eq!(villages.len(), 83756, "village count should match");
+        assert!(with_kel > 7000, "most districts should have kel_count");
+        assert!(with_desa > 7000, "most districts should have desa_count");
+        assert!(with_ket > 0, "some villages should have keterangan");
+        assert!(
+            with_long_ket > 0,
+            "some multi-line keterangan should be accumulated"
+        );
+
+        let bakongan = villages.iter().find(|v| v.code == "11.01.01.2001").unwrap();
+        assert_eq!(bakongan.kel_count, Some(0));
+        assert_eq!(bakongan.desa_count, Some(7));
+
+        let gambir = villages.iter().find(|v| v.code == "31.71.01.1001").unwrap();
+        assert_eq!(gambir.kel_count, Some(6));
+        assert_eq!(gambir.desa_count, Some(0));
+
+        let districts = extract_districts(&villages);
+        eprintln!("Districts: {}", districts.len());
+        assert!(districts.len() > 7000, "should have thousands of districts");
+
+        // Verify multi-line keterangan accumulation for Ujong Mangki
+        let ujiong = villages.iter().find(|v| v.code == "11.01.01.2002").unwrap();
+        eprintln!("Ujong Mangki keterangan: {:?}", ujiong.keterangan);
+        assert!(
+            ujiong.keterangan.is_some(),
+            "Ujong Mangki should have keterangan"
+        );
+        let kt = ujiong.keterangan.as_ref().unwrap();
+        assert!(
+            kt.contains("tgl 14 okt 2016"),
+            "should have continuation line accumulated: {}",
+            kt
+        );
+        assert!(
+            kt.contains("tgl 21 Juni 2017"),
+            "should have second continuation line: {}",
+            kt
+        );
     }
 }

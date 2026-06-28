@@ -162,6 +162,8 @@ pub struct PipelineOutput {
     pub poly_db_path: Option<PathBuf>,
     /// Path to the saved parsed villages JSON, if `save_parsed_villages` was set.
     pub parsed_villages_path: Option<PathBuf>,
+    /// Path to the saved parsed districts JSON, if `save_parsed_villages` was set.
+    pub parsed_districts_path: Option<PathBuf>,
     /// Number of villages in the database.
     pub village_count: usize,
     /// SHA-256 hash of the database file, in hexadecimal.
@@ -330,7 +332,18 @@ impl Pipeline {
         let parsed_villages_path = if let Some(detail) = self.save_parsed_villages {
             let path = self.cache_dir.join("parsed_villages.json");
             parse::save_parsed_villages(&villages, detail, &path)?;
+
+            let districts = parse::extract_districts(&villages);
+            let dist_path = self.cache_dir.join("parsed_districts.json");
+            parse::save_parsed_districts(&districts, &dist_path)?;
+
             Some(path)
+        } else {
+            None
+        };
+
+        let parsed_districts_path = if self.save_parsed_villages.is_some() {
+            Some(self.cache_dir.join("parsed_districts.json"))
         } else {
             None
         };
@@ -367,6 +380,7 @@ impl Pipeline {
             db_path: self.output,
             poly_db_path,
             parsed_villages_path,
+            parsed_districts_path,
             village_count,
             sha256,
         })
