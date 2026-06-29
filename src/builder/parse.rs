@@ -79,6 +79,54 @@ pub(crate) struct DistrictRecord {
     pub(crate) desa_count: Option<u32>,
 }
 
+/// A parsed province record for JSON output.
+#[derive(serde::Serialize, Clone)]
+pub(crate) struct ProvinceRecord {
+    pub(crate) code: String,
+    pub(crate) name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) ibukota: Option<String>,
+    pub(crate) kab_count: u32,
+    pub(crate) kota_count: u32,
+    pub(crate) kec_count: u32,
+    pub(crate) kel_count: u32,
+    pub(crate) desa_count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) luas_km2: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) penduduk: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) island_count: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) keterangan: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) population_male: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) population_female: Option<u64>,
+}
+
+/// A parsed city (kabupaten/kota) record for JSON output.
+#[derive(serde::Serialize, Clone)]
+pub(crate) struct CityRecord {
+    pub(crate) code: String,
+    pub(crate) name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) ibukota: Option<String>,
+    pub(crate) kec_count: u32,
+    pub(crate) kel_count: u32,
+    pub(crate) desa_count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) luas_km2: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) penduduk: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) keterangan: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) population_male: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) population_female: Option<u64>,
+}
+
 /// A parsed section header from the PDF (province + city grouping).
 pub(crate) struct SectionHeader<'a> {
     pub(crate) province: &'a str,
@@ -962,6 +1010,676 @@ pub(crate) fn parse_section_header<'a>(
     } else {
         None
     }
+}
+
+fn parse_indonesian_int(s: &str) -> Option<u64> {
+    let cleaned: String = s.chars().filter(|c| *c != '.').collect();
+    cleaned.parse().ok()
+}
+
+fn parse_indonesian_float(s: &str) -> Option<f64> {
+    let s = s.trim();
+    let cleaned: String = s
+        .chars()
+        .map(|c| {
+            if c == '.' {
+                '\x00'
+            } else if c == ',' {
+                '.'
+            } else {
+                c
+            }
+        })
+        .filter(|c| *c != '\x00')
+        .collect();
+    cleaned.parse().ok()
+}
+
+struct SectionAProvince {
+    code: String,
+    name: String,
+    kab_count: u32,
+    kota_count: u32,
+    kec_count: u32,
+    kel_count: u32,
+    desa_count: u32,
+    luas_km2: Option<f64>,
+    penduduk: Option<u64>,
+    island_count: Option<u32>,
+}
+
+#[allow(dead_code)]
+struct CProvinceHeader {
+    code: String,
+    name: String,
+    ibukota: Option<String>,
+    keterangan: Option<String>,
+}
+
+struct CCityHeader {
+    code: String,
+    name: String,
+    ibukota: Option<String>,
+    kec_count: u32,
+    kel_count: u32,
+    desa_count: u32,
+    luas_km2: Option<f64>,
+    penduduk: Option<u64>,
+    keterangan: Option<String>,
+}
+
+struct SectionEEntry {
+    code: String,
+    male: Option<u64>,
+    female: Option<u64>,
+    #[allow(dead_code)]
+    total: Option<u64>,
+}
+
+fn parse_section_a(text: &str) -> Vec<SectionAProvince> {
+    let mut provinces = Vec::new();
+    let re = regex::Regex::new(r"^\s*\d+\s+(\d{2})\s+(\S+(?:\s+\S+)*?)\s{2,}(\S.*)$").unwrap();
+
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty()
+            || line.starts_with("NO")
+            || line.starts_with("A.")
+            || line.starts_with("JUMLAH")
+            || line.starts_with("KETERANGAN")
+            || line.starts_with("*")
+            || line.starts_with("**")
+            || line.starts_with("***")
+            || line.starts_with("****")
+            || line.chars().next().map_or(true, |c| !c.is_ascii_digit())
+        {
+            continue;
+        }
+        if let Some(cap) = re.captures(line) {
+            let code = cap[1].to_string();
+            let name = cap[2].trim().to_string();
+            let tail = cap[3].trim();
+
+            let tokens: Vec<&str> = tail.split_whitespace().collect();
+            if tokens.len() < 8 {
+                continue;
+            }
+
+            let kab_count = tokens[0].parse().unwrap_or(0);
+            let kota_count = tokens[1].parse().unwrap_or(0);
+            let kec_count = tokens[2].parse().unwrap_or(0);
+            let kel_count = parse_indonesian_int(tokens[3]).unwrap_or(0) as u32;
+            let desa_count = parse_indonesian_int(tokens[4]).unwrap_or(0) as u32;
+            let luas_km2 = parse_indonesian_float(tokens[5]);
+            let penduduk = parse_indonesian_int(tokens[6]);
+            let island_count = parse_indonesian_int(&tokens[7].replace(',', "")).map(|v| v as u32);
+
+            provinces.push(SectionAProvince {
+                code,
+                name,
+                kab_count,
+                kota_count,
+                kec_count,
+                kel_count,
+                desa_count,
+                luas_km2,
+                penduduk,
+                island_count,
+            });
+        }
+    }
+    provinces
+}
+
+fn parse_c_province_headers(text: &str) -> Vec<CProvinceHeader> {
+    let mut headers = Vec::new();
+
+    let roman_re = regex::Regex::new(
+        r"^\s*(?:I{1,3}|IV|V?I{1,3}|IX|X{1,3}V?I{0,3}|XXXI{0,2})\s+(\d{2})\s+([A-Za-z].+)$",
+    )
+    .unwrap();
+
+    let arabic_re = regex::Regex::new(r"^\s+(9[3-6])\s+([A-Za-z].+)$").unwrap();
+
+    for line in text.lines() {
+        if let Some(cap) = roman_re.captures(line) {
+            let code = cap[1].to_string();
+            let rest = cap[2].trim();
+            if let Some((name, ibukota, keterangan)) = parse_province_rest(rest) {
+                headers.push(CProvinceHeader {
+                    code,
+                    name,
+                    ibukota,
+                    keterangan,
+                });
+            }
+            continue;
+        }
+        if let Some(cap) = arabic_re.captures(line) {
+            let code = cap[1].to_string();
+            let rest = cap[2].trim();
+            if let Some((name, ibukota, keterangan)) = parse_province_rest(rest) {
+                headers.push(CProvinceHeader {
+                    code,
+                    name,
+                    ibukota,
+                    keterangan,
+                });
+            }
+        }
+    }
+    headers
+}
+
+fn find_keterangan_in_num_fields(num_fields: &[&str]) -> Option<String> {
+    let ket_pos = num_fields.iter().rposition(|t| !is_likely_number(t));
+    if let Some(kp) = ket_pos {
+        let ket = num_fields[kp..].join(" ");
+        if ket.is_empty() {
+            None
+        } else {
+            Some(ket)
+        }
+    } else {
+        None
+    }
+}
+
+fn parse_province_rest(rest: &str) -> Option<(String, Option<String>, Option<String>)> {
+    let tokens: Vec<&str> = rest.split_whitespace().collect();
+    if tokens.len() < 3 {
+        return None;
+    }
+
+    let gap_pos = find_first_large_gap(rest);
+    if let Some(gp) = gap_pos {
+        let before_gap = rest[..gp].trim_end();
+        let after_gap = rest[gp..].trim_start();
+        let name = before_gap.to_string();
+
+        let after_tokens: Vec<&str> = after_gap.split_whitespace().collect();
+        let ib_end = after_tokens
+            .iter()
+            .position(|t| is_likely_number(t))
+            .unwrap_or(after_tokens.len());
+        let ibukota = if ib_end > 0 {
+            Some(after_tokens[..ib_end].join(" "))
+        } else {
+            None
+        };
+
+        let num_start_in_after = after_tokens
+            .iter()
+            .position(|t| is_likely_number(t))
+            .unwrap_or(after_tokens.len());
+        let num_fields: Vec<&str> = after_tokens[num_start_in_after..].to_vec();
+        let keterangan = find_keterangan_in_num_fields(&num_fields);
+
+        return Some((name, ibukota, keterangan));
+    }
+
+    let num_start = find_numeric_start(&tokens);
+    if num_start < 1 {
+        return None;
+    }
+
+    let name = tokens[..num_start].join(" ");
+    let num_fields = &tokens[num_start..];
+    if num_fields.len() < 5 {
+        return None;
+    }
+
+    let keterangan = find_keterangan_in_num_fields(num_fields);
+    Some((name, None, keterangan))
+}
+
+fn parse_c_city_headers(text: &str) -> Vec<CCityHeader> {
+    let mut cities: Vec<CCityHeader> = Vec::new();
+    let mut current_keterangan_continuation = false;
+
+    let city_re = regex::Regex::new(r"^\s+(\d{2}\.\d{2})\s+\d+\s+(.+)$").unwrap();
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+
+        if current_keterangan_continuation && is_keterangan_continuation(line).is_some() {
+            if let Some(last) = cities.last_mut() {
+                if let Some(ref mut ket) = last.keterangan {
+                    ket.push(' ');
+                    ket.push_str(trimmed);
+                } else {
+                    last.keterangan = Some(trimmed.to_string());
+                }
+            }
+            continue;
+        }
+        current_keterangan_continuation = false;
+
+        if let Some(cap) = city_re.captures(line) {
+            let code = cap[1].to_string();
+            let rest = cap[2].trim();
+
+            let tokens: Vec<&str> = rest.split_whitespace().collect();
+            if tokens.len() < 3 {
+                continue;
+            }
+
+            let type_idx = tokens
+                .iter()
+                .position(|t| *t == "Kabupaten" || *t == "Kab" || *t == "Kota");
+            let type_idx = match type_idx {
+                Some(i) => i,
+                None => continue,
+            };
+
+            let num_start = find_numeric_start(&tokens);
+            if num_start <= type_idx + 1 {
+                continue;
+            }
+
+            let num_fields = &tokens[num_start..];
+
+            if num_fields.len() < 2 {
+                continue;
+            }
+
+            let (name, ibukota) = split_name_ibukota_by_gap(rest, type_idx, num_start);
+
+            let (ibukota_val, kec_count, kel_count, desa_count, luas_km2, penduduk, keterangan) =
+                parse_city_fields(num_fields, ibukota);
+
+            current_keterangan_continuation = keterangan.is_some();
+
+            cities.push(CCityHeader {
+                code,
+                name,
+                ibukota: ibukota_val,
+                kec_count,
+                kel_count,
+                desa_count,
+                luas_km2,
+                penduduk,
+                keterangan,
+            });
+        }
+    }
+    cities
+}
+
+fn find_numeric_start(tokens: &[&str]) -> usize {
+    for i in 1..tokens.len() {
+        if i + 1 < tokens.len() && is_likely_number(tokens[i]) && is_likely_number(tokens[i + 1]) {
+            return i;
+        }
+    }
+    for i in 2..tokens.len() {
+        if is_likely_number(tokens[i]) {
+            return i;
+        }
+    }
+    tokens.len()
+}
+
+fn is_likely_number(token: &str) -> bool {
+    if token.is_empty() {
+        return false;
+    }
+    let first = token.chars().next().unwrap();
+    first.is_ascii_digit()
+}
+
+fn split_name_ibukota_by_gap(
+    rest: &str,
+    type_idx: usize,
+    num_start: usize,
+) -> (String, Option<String>) {
+    let tokens: Vec<&str> = rest.split_whitespace().collect();
+    if tokens.is_empty() || type_idx >= tokens.len() {
+        return (String::new(), None);
+    }
+
+    let first_gap_pos = find_first_large_gap(rest);
+    if let Some(gap_pos) = first_gap_pos {
+        let before_gap: String = rest[..gap_pos].trim().to_string();
+        let after_gap = rest[gap_pos..].trim_start();
+        let after_tokens: Vec<&str> = after_gap.split_whitespace().collect();
+
+        let name = before_gap;
+        let ibukota = if !after_tokens.is_empty() {
+            let ib_end = after_tokens
+                .iter()
+                .position(|t| is_likely_number(t))
+                .unwrap_or(after_tokens.len());
+            if ib_end > 0 {
+                Some(after_tokens[..ib_end].join(" "))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        return (name, ibukota);
+    }
+
+    let city_type = tokens[type_idx];
+    if city_type == "Kota" {
+        let name = tokens[type_idx..num_start].join(" ");
+        let ibukota = if num_start > type_idx + 1 {
+            Some(tokens[type_idx + 1..num_start].join(" "))
+        } else {
+            None
+        };
+        return (name, ibukota);
+    }
+
+    let name = tokens[type_idx..num_start].join(" ");
+    (name, None)
+}
+
+fn find_first_large_gap(s: &str) -> Option<usize> {
+    let mut consecutive_spaces = 0usize;
+    let mut gap_start: Option<usize> = None;
+    for (i, c) in s.char_indices() {
+        if c == ' ' {
+            if consecutive_spaces == 0 {
+                gap_start = Some(i);
+            }
+            consecutive_spaces += 1;
+        } else {
+            if consecutive_spaces >= 3 {
+                return gap_start;
+            }
+            consecutive_spaces = 0;
+            gap_start = None;
+        }
+    }
+    None
+}
+
+fn parse_city_fields(
+    tokens: &[&str],
+    pre_ibukota: Option<String>,
+) -> (
+    Option<String>,
+    u32,
+    u32,
+    u32,
+    Option<f64>,
+    Option<u64>,
+    Option<String>,
+) {
+    let mut pos = 0;
+
+    let ibukota = if pre_ibukota.is_some() {
+        pre_ibukota
+    } else if pos < tokens.len() && !is_likely_number(tokens[pos]) {
+        let mut ib_parts = Vec::new();
+        while pos < tokens.len() && !is_likely_number(tokens[pos]) {
+            ib_parts.push(tokens[pos]);
+            pos += 1;
+        }
+        let ib = ib_parts.join(" ");
+        if ib.is_empty() {
+            None
+        } else {
+            Some(ib)
+        }
+    } else {
+        None
+    };
+
+    let kec_count = if pos < tokens.len() {
+        let v = parse_indonesian_int(tokens[pos]).unwrap_or(0) as u32;
+        pos += 1;
+        v
+    } else {
+        0
+    };
+
+    let (kel_count, desa_count) = if pos + 1 < tokens.len() {
+        let a = parse_indonesian_int(tokens[pos]).unwrap_or(0) as u32;
+        let b = parse_indonesian_int(tokens[pos + 1]).unwrap_or(0) as u32;
+        pos += 2;
+        (a, b)
+    } else if pos < tokens.len() {
+        let a = parse_indonesian_int(tokens[pos]).unwrap_or(0) as u32;
+        pos += 1;
+        (a, 0)
+    } else {
+        (0, 0)
+    };
+
+    let luas_km2 = if pos < tokens.len() {
+        let v = parse_indonesian_float(tokens[pos]);
+        pos += 1;
+        v
+    } else {
+        None
+    };
+
+    let penduduk = if pos < tokens.len() {
+        let v = parse_indonesian_int(tokens[pos]);
+        pos += 1;
+        v
+    } else {
+        None
+    };
+
+    let keterangan = if pos < tokens.len() {
+        let ket = tokens[pos..].join(" ");
+        if ket.is_empty() {
+            None
+        } else {
+            Some(ket)
+        }
+    } else {
+        None
+    };
+
+    (
+        ibukota, kec_count, kel_count, desa_count, luas_km2, penduduk, keterangan,
+    )
+}
+
+fn parse_section_e(text: &str) -> Vec<SectionEEntry> {
+    let mut entries = Vec::new();
+    let re = regex::Regex::new(
+        r"^\s*(\d{2}(?:\.\d{2})?)\s+(.+?)\s+([\w'.\d,]+)\s+([\w'.\d,]+)\s+([\w'.\d,]+)\s*$",
+    )
+    .unwrap();
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty()
+            || trimmed.starts_with("Kode")
+            || trimmed.starts_with("1")
+                && trimmed.contains("2")
+                && trimmed.contains("3")
+                && trimmed.contains("4")
+                && trimmed.contains("5")
+                && !trimmed.contains("Kabupaten")
+                && !trimmed.contains("Provinsi")
+                && !trimmed.contains("Kota")
+                && !trimmed.contains("Papua")
+                && !trimmed.contains("Aceh")
+        {
+            continue;
+        }
+        if trimmed.starts_with("INDONESIA")
+            || trimmed.starts_with("Total")
+            || trimmed.starts_with("*)")
+            || trimmed.starts_with("Salinan")
+            || trimmed.starts_with("Kepala")
+            || trimmed.starts_with("NIP")
+            || trimmed.starts_with("As")
+            || trimmed.starts_with("Pe ")
+            || trimmed.starts_with("MENTERI")
+            || trimmed.starts_with("ttd")
+        {
+            continue;
+        }
+        if let Some(cap) = re.captures(trimmed) {
+            let code = cap[1].to_string();
+            let male_str = &cap[3];
+            let female_str = &cap[4];
+            let total_str = &cap[5];
+            let male = recover_ocr_number(male_str);
+            let female = recover_ocr_number(female_str);
+            let total = recover_ocr_number(total_str);
+            entries.push(SectionEEntry {
+                code,
+                male,
+                female,
+                total,
+            });
+        }
+    }
+    entries
+}
+
+fn recover_ocr_number(s: &str) -> Option<u64> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    if let Some(v) = parse_indonesian_int(s) {
+        return Some(v);
+    }
+    let mut chars: Vec<char> = s.chars().collect();
+    if !chars.is_empty() {
+        let first = chars[0];
+        if first == '\'' || first == 'r' || first == 'l' {
+            chars[0] = '1';
+        }
+        if chars.len() > 1
+            && (chars[1] == 't' || chars[1] == 'l')
+            && chars[0] == '1'
+            && chars[2].is_ascii_digit()
+        {
+            chars.remove(1);
+        }
+    }
+    let repaired: String = chars
+        .into_iter()
+        .filter(|c| c.is_ascii_digit() || *c == '.' || *c == ',')
+        .collect();
+    if repaired.is_empty() {
+        return None;
+    }
+    parse_indonesian_int(&repaired)
+}
+
+pub(crate) fn extract_provinces(text: &str) -> Vec<ProvinceRecord> {
+    let section_a = parse_section_a(text);
+    let c_headers = parse_c_province_headers(text);
+    let section_e = parse_section_e(text);
+
+    let ibukota_map: std::collections::HashMap<String, String> = c_headers
+        .iter()
+        .filter_map(|h| h.ibukota.as_ref().map(|ib| (h.code.clone(), ib.clone())))
+        .collect();
+
+    let ket_map: std::collections::HashMap<String, String> = c_headers
+        .iter()
+        .filter_map(|h| h.keterangan.as_ref().map(|k| (h.code.clone(), k.clone())))
+        .collect();
+
+    let male_map: std::collections::HashMap<String, u64> = section_e
+        .iter()
+        .filter_map(|e| e.male.map(|m| (e.code.clone(), m)))
+        .collect();
+
+    let female_map: std::collections::HashMap<String, u64> = section_e
+        .iter()
+        .filter_map(|e| e.female.map(|f| (e.code.clone(), f)))
+        .collect();
+
+    section_a
+        .into_iter()
+        .map(|prov| {
+            let ibukota = ibukota_map.get(&prov.code).cloned();
+            let keterangan = ket_map.get(&prov.code).cloned();
+            let population_male = male_map.get(&prov.code).copied();
+            let population_female = female_map.get(&prov.code).copied();
+            ProvinceRecord {
+                code: prov.code,
+                name: prov.name,
+                ibukota,
+                keterangan,
+                kab_count: prov.kab_count,
+                kota_count: prov.kota_count,
+                kec_count: prov.kec_count,
+                kel_count: prov.kel_count,
+                desa_count: prov.desa_count,
+                luas_km2: prov.luas_km2,
+                penduduk: prov.penduduk,
+                island_count: prov.island_count,
+                population_male,
+                population_female,
+            }
+        })
+        .collect()
+}
+
+pub(crate) fn extract_cities(text: &str) -> Vec<CityRecord> {
+    let c_cities = parse_c_city_headers(text);
+    let section_e = parse_section_e(text);
+
+    let male_map: std::collections::HashMap<String, u64> = section_e
+        .iter()
+        .filter_map(|e| e.male.map(|m| (e.code.clone(), m)))
+        .collect();
+
+    let female_map: std::collections::HashMap<String, u64> = section_e
+        .iter()
+        .filter_map(|e| e.female.map(|f| (e.code.clone(), f)))
+        .collect();
+
+    c_cities
+        .into_iter()
+        .map(|city| {
+            let population_male = male_map.get(&city.code).copied();
+            let population_female = female_map.get(&city.code).copied();
+            CityRecord {
+                code: city.code,
+                name: city.name,
+                ibukota: city.ibukota,
+                kec_count: city.kec_count,
+                kel_count: city.kel_count,
+                desa_count: city.desa_count,
+                luas_km2: city.luas_km2,
+                penduduk: city.penduduk,
+                keterangan: city.keterangan,
+                population_male,
+                population_female,
+            }
+        })
+        .collect()
+}
+
+/// Save parsed province records to a JSON file.
+pub(crate) fn save_parsed_provinces(
+    provinces: &[ProvinceRecord],
+    path: &Path,
+) -> Result<(), super::PipelineError> {
+    use super::PipelineResultExt;
+    let json_str =
+        serde_json::to_string_pretty(provinces).ctx("failed to serialize parsed provinces")?;
+    std::fs::write(path, json_str).ctx("failed to write parsed provinces JSON")?;
+    eprintln!("Saved {} parsed provinces to {:?}", provinces.len(), path);
+    Ok(())
+}
+
+/// Save parsed city (kabupaten/kota) records to a JSON file.
+pub(crate) fn save_parsed_cities(
+    cities: &[CityRecord],
+    path: &Path,
+) -> Result<(), super::PipelineError> {
+    use super::PipelineResultExt;
+    let json_str = serde_json::to_string_pretty(cities).ctx("failed to serialize parsed cities")?;
+    std::fs::write(path, json_str).ctx("failed to write parsed cities JSON")?;
+    eprintln!("Saved {} parsed cities to {:?}", cities.len(), path);
+    Ok(())
 }
 
 /// Save parsed village records to a JSON file.
@@ -2298,5 +3016,144 @@ C.K.1) Kabupaten Bandung Provinsi Jawa Barat
             "should have second continuation line: {}",
             kt
         );
+    }
+
+    #[test]
+    fn test_parse_indonesian_int() {
+        assert_eq!(parse_indonesian_int("5.623.479"), Some(5623479));
+        assert_eq!(parse_indonesian_int("290"), Some(290));
+        assert_eq!(parse_indonesian_int("0"), Some(0));
+        assert_eq!(parse_indonesian_int("2.028"), Some(2028));
+        assert_eq!(parse_indonesian_int("1.470.518"), Some(1470518));
+        assert_eq!(parse_indonesian_int("17.380"), Some(17380));
+    }
+
+    #[test]
+    fn test_parse_indonesian_float() {
+        assert_eq!(parse_indonesian_float("56.835,019"), Some(56835.019));
+        assert_eq!(parse_indonesian_float("661,530"), Some(661.530));
+        assert_eq!(parse_indonesian_float("37.053,331"), Some(37053.331));
+        assert_eq!(parse_indonesian_float("8.170,375"), Some(8170.375));
+        assert_eq!(parse_indonesian_float("147.018,063"), Some(147018.063));
+    }
+
+    #[test]
+    fn test_recover_ocr_number() {
+        assert_eq!(recover_ocr_number("292.552"), Some(292552));
+        assert_eq!(recover_ocr_number("r42.968"), Some(142968));
+        assert_eq!(recover_ocr_number("'t05.374"), Some(105374));
+        assert_eq!(recover_ocr_number("723.511"), Some(723511));
+        assert_eq!(recover_ocr_number(""), None);
+    }
+
+    #[test]
+    fn test_parse_section_a_sample() {
+        let text = "  1     11    Aceh                                                   18             5         290         0    6.500       56.835,019         5.623.479            365\n  2     12    Sumatera Utara                                         25             8         455       693    5.417       72.437,755        15.640.905            228\n";
+        let provinces = parse_section_a(text);
+        assert_eq!(provinces.len(), 2);
+        assert_eq!(provinces[0].code, "11");
+        assert_eq!(provinces[0].name, "Aceh");
+        assert_eq!(provinces[0].kab_count, 18);
+        assert_eq!(provinces[0].kota_count, 5);
+        assert_eq!(provinces[0].kec_count, 290);
+        assert_eq!(provinces[0].kel_count, 0);
+        assert_eq!(provinces[0].desa_count, 6500);
+        assert_eq!(provinces[0].luas_km2, Some(56835.019));
+        assert_eq!(provinces[0].penduduk, Some(5623479));
+        assert_eq!(provinces[0].island_count, Some(365));
+
+        assert_eq!(provinces[1].code, "12");
+        assert_eq!(provinces[1].name, "Sumatera Utara");
+        assert_eq!(provinces[1].kel_count, 693);
+        assert_eq!(provinces[1].desa_count, 5417);
+    }
+
+    #[test]
+    fn test_parse_c_province_headers_roman() {
+        let line = " I       11      Aceh                             Banda Aceh    18     5       290                6500     56.835     5.623.479   Undang-undang Nomor 11 Tahun 2006 tentang Pemerintahan Aceh\n";
+        let headers = parse_c_province_headers(line);
+        assert_eq!(headers.len(), 1);
+        assert_eq!(headers[0].code, "11");
+        assert_eq!(headers[0].name, "Aceh");
+        assert_eq!(headers[0].ibukota.as_deref(), Some("Banda Aceh"));
+        assert!(headers[0].keterangan.is_some());
+    }
+
+    #[test]
+    fn test_parse_c_province_headers_arabic() {
+        let line = "        93      Papua Selatan                Kabupaten Merauke    4     0       82      13        677     117.859      562.220    Undang-Undang Nomor 14 Tahun 2022 tentang Provinsi Papua\n";
+        let headers = parse_c_province_headers(line);
+        assert_eq!(headers.len(), 1);
+        assert_eq!(headers[0].code, "93");
+        assert_eq!(headers[0].name, "Papua Selatan");
+        assert_eq!(headers[0].ibukota.as_deref(), Some("Kabupaten Merauke"));
+    }
+
+    #[test]
+    fn test_parse_c_city_headers_basic() {
+        let text = "       11.01     1      Kabupaten Aceh Selatan    Tapaktuan                    18       0         260      4.174      239.629     Perbaikan nama ibu kota semula Tapak Tuan menjadi Tapaktuan\n       11.02     2      Kabupaten Aceh Tenggara    Kutacane                    16           385      4.179,123         235.589\n";
+        let cities = parse_c_city_headers(text);
+        assert_eq!(cities.len(), 2);
+        assert_eq!(cities[0].code, "11.01");
+        assert_eq!(cities[0].name, "Kabupaten Aceh Selatan");
+        assert_eq!(cities[0].ibukota.as_deref(), Some("Tapaktuan"));
+        assert_eq!(cities[0].kec_count, 18);
+        assert!(cities[0].keterangan.is_some());
+    }
+
+    #[test]
+    fn test_parse_section_e_basic() {
+        let text = "     11    Aceh                                                     2.815.060              2.808.419           5.623.479\n   11.01   Kabupaten Aceh Selatan                                      120.041              119.588             239.629\n";
+        let entries = parse_section_e(text);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].code, "11");
+        assert_eq!(entries[0].male, Some(2815060));
+        assert_eq!(entries[0].female, Some(2808419));
+        assert_eq!(entries[0].total, Some(5623479));
+        assert_eq!(entries[1].code, "11.01");
+        assert_eq!(entries[1].male, Some(120041));
+    }
+
+    #[test]
+    #[ignore]
+    fn test_parse_real_pdf_phase2_functional() {
+        let text = match std::fs::read_to_string("/tmp/wilayah/pdf_text.txt") {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+
+        let provinces = extract_provinces(&text);
+        eprintln!("Provinces: {}", provinces.len());
+        assert_eq!(provinces.len(), 38, "should have 38 provinces");
+
+        let aceh = provinces.iter().find(|p| p.code == "11").unwrap();
+        assert_eq!(aceh.name, "Aceh");
+        assert_eq!(aceh.kab_count, 18);
+        assert_eq!(aceh.kota_count, 5);
+        assert_eq!(aceh.kec_count, 290);
+        assert_eq!(aceh.desa_count, 6500);
+        assert!(aceh.ibukota.is_some(), "Aceh should have ibukota");
+        assert_eq!(aceh.ibukota.as_deref(), Some("Banda Aceh"));
+        assert!(aceh.luas_km2.is_some());
+        assert!(aceh.penduduk.is_some());
+        assert!(aceh.island_count.is_some());
+        assert!(aceh.population_male.is_some());
+        assert!(aceh.population_female.is_some());
+
+        let papua_selatan = provinces.iter().find(|p| p.code == "93").unwrap();
+        assert_eq!(papua_selatan.name, "Papua Selatan");
+        assert!(papua_selatan.ibukota.is_some());
+
+        let cities = extract_cities(&text);
+        eprintln!("Cities: {}", cities.len());
+        assert!(cities.len() > 500, "should have 500+ cities");
+
+        let aceh_selatan = cities.iter().find(|c| c.code == "11.01").unwrap();
+        assert_eq!(aceh_selatan.name, "Kabupaten Aceh Selatan");
+        assert!(aceh_selatan.ibukota.is_some());
+        eprintln!("Aceh Selatan ibukota: {:?}", aceh_selatan.ibukota);
+        assert_eq!(aceh_selatan.kec_count, 18);
+        assert!(aceh_selatan.penduduk.is_some());
+        assert!(aceh_selatan.population_male.is_some());
     }
 }

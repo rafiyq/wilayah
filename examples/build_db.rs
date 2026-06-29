@@ -103,6 +103,12 @@ fn main() {
             if let Some(dist) = &output.parsed_districts_path {
                 println!("Parsed districts: {}", dist.display());
             }
+            if let Some(prov) = &output.parsed_provinces_path {
+                println!("Parsed provinces: {}", prov.display());
+            }
+            if let Some(city) = &output.parsed_cities_path {
+                println!("Parsed cities: {}", city.display());
+            }
             println!("Villages: {}", output.village_count);
             println!("SHA-256: {}", output.sha256);
 
