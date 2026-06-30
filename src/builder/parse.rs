@@ -1118,7 +1118,7 @@ fn parse_section_a(text: &str) -> Vec<SectionAProvince> {
             || line.starts_with("**")
             || line.starts_with("***")
             || line.starts_with("****")
-            || line.chars().next().map_or(true, |c| !c.is_ascii_digit())
+            || line.chars().next().is_none_or(|c| !c.is_ascii_digit())
         {
             continue;
         }
@@ -1339,8 +1339,8 @@ fn find_numeric_start(tokens: &[&str]) -> usize {
             return i;
         }
     }
-    for i in 2..tokens.len() {
-        if is_likely_number(tokens[i]) {
+    for (i, token) in tokens.iter().enumerate().skip(2) {
+        if is_likely_number(token) {
             return i;
         }
     }
@@ -1423,10 +1423,7 @@ fn find_first_large_gap(s: &str) -> Option<usize> {
     None
 }
 
-fn parse_city_fields(
-    tokens: &[&str],
-    pre_ibukota: Option<String>,
-) -> (
+type CityFields = (
     Option<String>,
     u32,
     u32,
@@ -1434,7 +1431,9 @@ fn parse_city_fields(
     Option<f64>,
     Option<u64>,
     Option<String>,
-) {
+);
+
+fn parse_city_fields(tokens: &[&str], pre_ibukota: Option<String>) -> CityFields {
     let mut pos = 0;
 
     let ibukota = if pre_ibukota.is_some() {
@@ -1832,7 +1831,7 @@ fn parse_section_dc(text: &str) -> Vec<IslandRecord> {
         let trimmed = line.trim();
 
         if trimmed.is_empty() || !coord_re.is_match(trimmed) {
-            if let Some(_) = province_header_re.captures(line) {
+            if province_header_re.captures(line).is_some() {
                 // just consume
             }
             if let Some(cap) = kab_header_re.captures(line) {
@@ -1850,7 +1849,7 @@ fn parse_section_dc(text: &str) -> Vec<IslandRecord> {
             let name = cap[2].trim().to_string();
             let tail = cap[3].trim();
             let (latitude, longitude, area_km2, status, keterangan) =
-                parse_island_tail(&tail, &coord_re);
+                parse_island_tail(tail, &coord_re);
             results.push(IslandRecord {
                 code,
                 name,
@@ -1892,16 +1891,15 @@ fn parse_section_dc(text: &str) -> Vec<IslandRecord> {
     results
 }
 
-fn parse_island_tail(
-    tail: &str,
-    coord_re: &regex::Regex,
-) -> (
+type IslandTail = (
     Option<String>,
     Option<String>,
     Option<f64>,
     Option<String>,
     Option<String>,
-) {
+);
+
+fn parse_island_tail(tail: &str, coord_re: &regex::Regex) -> IslandTail {
     if let Some(m) = coord_re.captures(tail) {
         let lat_deg: i32 = m[1].parse().unwrap_or(0);
         let lat_min: i32 = m[2].parse().unwrap_or(0);

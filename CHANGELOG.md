@@ -2,7 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased 
+## Unreleased
+
+## 0.5.2 - 2026-06-30
 
 ### Added
 
@@ -20,6 +22,18 @@ All notable changes to this project will be documented in this file.
 - `locate_contained()` extracted into db/polygon.rs for polygon containment logic
 - `Default` impl on `DataInfo` (used by `cached_data_info()` fallback)
 - `tests/db_types.rs` — Database and Error integration tests (split from tests/types.rs)
+- `DistrictRecord` struct with kel_count, desa_count, district_note; `parsed_districts.json` sidecar output
+- `ProvinceRecord` struct with ibukota, luas, penduduk, island_count; `parsed_provinces.json` sidecar output
+- `CityRecord` struct with ibukota, male_pop, female_pop, total_pop, luas, penduduk, island_count; `parsed_cities.json` sidecar output
+- `IslandSummary` struct (code, name, province, island_count); `parsed_island_summaries.json` sidecar output
+- `IslandRecord` struct (code, name, kabupaten_code, latitude, longitude, area_km2, status, keterangan); `parsed_islands.json` sidecar output
+- `VillageRecord` enriched with kel_count, desa_count, keterangan fields
+- `extract_district_name()` with column-gap splitting and code-as-name detection
+- `strip_district_note()` and `extract_suffix_note()` with word boundary checks
+- `parse_province_rest()` with `find_first_large_gap()` for ibukota extraction from Section C province headers
+- `parse_section_db()`, `parse_section_dc()`, `parse_island_tail()`, `parse_island_fields()`, `coord_regex()`, `extract_islands()` — island data parsing from PDF sections D.b + D.c
+- Population data parsing from Section E (male, female, total per kabupaten/kota)
+- 40 new unit tests (14 island tests + district/note/keyword tests)
 
 ### Changed
 
@@ -55,9 +69,18 @@ All notable changes to this project will be documented in this file.
 - Poly schema duplication noted in tests/common/mod.rs with cross-reference to db_create.rs
 - Response type duplication noted in serve.rs and Cloudflare Worker with cross-references
 - Pipeline resummability limitation documented in Pipeline::run() doc comment
+- `PipelineOutput` gained 5 new sidecar JSON path fields (parsed_provinces, parsed_cities, parsed_districts, parsed_island_summaries, parsed_islands)
+- `Pipeline::run()` now extracts provinces, cities, and island data from PDF sections A, B, C headers, D.b, D.c, and E
 
 ### Fixed
 
+- P1+P2: 177 truncated district names from column-gap misparse + missing district_note field
+- P3: find_note_boundary false positives from partial keyword matches (added word boundary check)
+- P4: PMD keyword not triggering note boundary (moved to self-validating keywords)
+- P5: Missing note keywords for OCR typos (Semula, Berdasarkan, PP variants)
+- P6: 322 dirty village names from column-gap splitting omission in extract_village_name
+- P7+P8: Trailing periods on non-abbreviation names + all-lowercase names not capitalized
+- P9: Word boundary checks in strip_district_note/extract_suffix_note prevent false splits
 - CI cache key referenced stale src/builder.rs (now src/builder/mod.rs)
 - RELEASE.md listed wilayah::open() (should be wilayah::Database::open()) and private data_info_from_conn() (removed)
 - README.md referenced src/builder.rs (should be src/builder/)
