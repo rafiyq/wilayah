@@ -127,6 +127,33 @@ pub(crate) struct CityRecord {
     pub(crate) population_female: Option<u64>,
 }
 
+/// A parsed city-level island count from Section D.b of the PDF.
+#[derive(serde::Serialize, Clone)]
+pub(crate) struct IslandSummary {
+    pub(crate) code: String,
+    pub(crate) name: String,
+    pub(crate) province: String,
+    pub(crate) island_count: u32,
+}
+
+/// A parsed individual island record from Section D.c of the PDF.
+#[derive(serde::Serialize, Clone)]
+pub(crate) struct IslandRecord {
+    pub(crate) code: String,
+    pub(crate) name: String,
+    pub(crate) kabupaten_code: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) latitude: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) longitude: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) area_km2: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) keterangan: Option<String>,
+}
+
 /// A parsed section header from the PDF (province + city grouping).
 pub(crate) struct SectionHeader<'a> {
     pub(crate) province: &'a str,
@@ -1749,6 +1776,256 @@ pub(crate) fn save_parsed_districts(
     Ok(())
 }
 
+fn parse_section_db(text: &str) -> Vec<IslandSummary> {
+    let mut results = Vec::new();
+    let province_re = regex::Regex::new(r"^\s*D\.b\.\d+\)\s+Provinsi\s+(.+)$").unwrap();
+    let city_re =
+        regex::Regex::new(r"^\s*\d+\s+(\d{2}\.\d{2})\s+(\S+(?:\s+\S+)*?)\s{2,}(\S.*)$").unwrap();
+
+    let mut current_province = String::new();
+
+    for line in text.lines() {
+        if let Some(cap) = province_re.captures(line) {
+            current_province = cap[1].trim().to_string();
+            continue;
+        }
+
+        if let Some(cap) = city_re.captures(line) {
+            let code = cap[1].to_string();
+            let name = cap[2].trim().to_string();
+            let tail = cap[3].trim();
+            let island_count: u32 = parse_indonesian_int(tail).unwrap_or(0) as u32;
+            if island_count == 0 {
+                continue;
+            }
+            results.push(IslandSummary {
+                code,
+                name,
+                province: current_province.clone(),
+                island_count,
+            });
+        }
+    }
+
+    results
+}
+
+fn coord_regex() -> regex::Regex {
+    regex::Regex::new(
+        r#"(\d{1,2})°(\d{2})'(\d{2}(?:\.\d+)?)"\s*([US])\s+(\d{2,3})°(\d{2})'(\d{2}(?:\.\d+)?)"\s*([TEB])"#,
+    ).unwrap()
+}
+
+fn parse_section_dc(text: &str) -> Vec<IslandRecord> {
+    let mut results = Vec::new();
+    let coord_re = coord_regex();
+
+    let kab_header_re =
+        regex::Regex::new(r"^\s*(\d{2}\.\d{2})\s+(Kabupaten|Kota)\s+(\S.*?)\s+(\S+)\s*$").unwrap();
+    let island_code_re =
+        regex::Regex::new(r"^\s*(\d{2}\.\d{2}\.\d{5})\s+(\S+(?:\s+\S+)*?)\s{2,}(.+)$").unwrap();
+    let province_header_re = regex::Regex::new(r"^\s*D\.c\.\d+\)\s+Provinsi\s+(.+)$").unwrap();
+
+    let mut current_kab_code = String::new();
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+
+        if trimmed.is_empty() || !coord_re.is_match(trimmed) {
+            if let Some(_) = province_header_re.captures(line) {
+                // just consume
+            }
+            if let Some(cap) = kab_header_re.captures(line) {
+                current_kab_code = cap[1].to_string();
+            }
+            // Also check for province-level kab headers like:
+            // "  96             Papua Barat Daya                                     1"
+            // Or:  "11.01           Kabupaten Aceh Selatan                              6"
+            // The kab_header_re above already handles XX.XX code format
+            continue;
+        }
+
+        if let Some(cap) = island_code_re.captures(line) {
+            let code = cap[1].to_string();
+            let name = cap[2].trim().to_string();
+            let tail = cap[3].trim();
+            let (latitude, longitude, area_km2, status, keterangan) =
+                parse_island_tail(&tail, &coord_re);
+            results.push(IslandRecord {
+                code,
+                name,
+                kabupaten_code: current_kab_code.clone(),
+                latitude,
+                longitude,
+                area_km2,
+                status,
+                keterangan,
+            });
+            continue;
+        }
+
+        // Codeless island lines: start with many spaces, then island name, then coordinates
+        // Must NOT start with a number (those are kab headers or coded islands)
+        if !trimmed.starts_with(|c: char| c.is_ascii_digit()) {
+            let name_and_tail = trimmed.trim();
+            if let Some(m) = coord_re.captures(name_and_tail) {
+                let name_end = m.get(0).unwrap().start();
+                let name = name_and_tail[..name_end].trim().to_string();
+                let tail = name_and_tail[m.get(0).unwrap().start()..].trim();
+                let (latitude, longitude, area_km2, status, keterangan) =
+                    parse_island_tail(tail, &coord_re);
+                let synthetic_code = format!("{}.XXXXX", current_kab_code);
+                results.push(IslandRecord {
+                    code: synthetic_code,
+                    name,
+                    kabupaten_code: current_kab_code.clone(),
+                    latitude,
+                    longitude,
+                    area_km2,
+                    status,
+                    keterangan,
+                });
+            }
+        }
+    }
+
+    results
+}
+
+fn parse_island_tail(
+    tail: &str,
+    coord_re: &regex::Regex,
+) -> (
+    Option<String>,
+    Option<String>,
+    Option<f64>,
+    Option<String>,
+    Option<String>,
+) {
+    if let Some(m) = coord_re.captures(tail) {
+        let lat_deg: i32 = m[1].parse().unwrap_or(0);
+        let lat_min: i32 = m[2].parse().unwrap_or(0);
+        let lat_sec: f64 = m[3].parse().unwrap_or(0.0);
+        let lat_dir = &m[4];
+        let lon_deg: i32 = m[5].parse().unwrap_or(0);
+        let lon_min: i32 = m[6].parse().unwrap_or(0);
+        let lon_sec: f64 = m[7].parse().unwrap_or(0.0);
+        let lon_dir = &m[8];
+
+        let lat_decimal = if lat_dir == "S" {
+            -(lat_deg as f64) - (lat_min as f64) / 60.0 - lat_sec / 3600.0
+        } else {
+            (lat_deg as f64) + (lat_min as f64) / 60.0 + lat_sec / 3600.0
+        };
+        let lon_decimal = if lon_dir == "T" || lon_dir == "E" {
+            (lon_deg as f64) + (lon_min as f64) / 60.0 + lon_sec / 3600.0
+        } else {
+            -(lon_deg as f64) - (lon_min as f64) / 60.0 - lon_sec / 3600.0
+        };
+
+        let lat_str = format!("{:.6}", lat_decimal);
+        let lon_str = format!("{:.6}", lon_decimal);
+
+        let after_coord = tail[m.get(0).unwrap().end()..].trim();
+
+        let (area_km2, status, keterangan) = parse_island_fields(after_coord);
+
+        (Some(lat_str), Some(lon_str), area_km2, status, keterangan)
+    } else {
+        (None, None, None, None, None)
+    }
+}
+
+fn parse_island_fields(mut rest: &str) -> (Option<f64>, Option<String>, Option<String>) {
+    rest = rest.trim();
+
+    if rest.is_empty() {
+        return (None, None, None);
+    }
+
+    let mut area_km2: Option<f64> = None;
+    let mut status: Option<String> = None;
+    let mut keterangan: Option<String> = None;
+
+    // Try to extract BP/TBP status first
+    if rest.starts_with("BP") || rest.starts_with("TBP") {
+        if rest.starts_with("TBP") {
+            status = Some("TBP".to_string());
+            rest = rest[3..].trim();
+        } else if rest.starts_with("BP") {
+            status = Some("BP".to_string());
+            rest = rest[2..].trim();
+        }
+    } else {
+        let tokens: Vec<&str> = rest.split_whitespace().collect();
+        if !tokens.is_empty() {
+            if let Ok(area) = tokens[0].parse::<f64>() {
+                area_km2 = Some(area);
+                rest = if tokens.len() > 1 {
+                    rest[tokens[0].len()..].trim()
+                } else {
+                    ""
+                };
+                // Now check for status after area
+                if rest.starts_with("BP") || rest.starts_with("TBP") {
+                    if rest.starts_with("TBP") {
+                        status = Some("TBP".to_string());
+                        rest = rest[3..].trim();
+                    } else if rest.starts_with("BP") {
+                        status = Some("BP".to_string());
+                        rest = rest[2..].trim();
+                    }
+                }
+            }
+        }
+    }
+
+    // Remaining text is keterangan
+    if !rest.is_empty() {
+        // Strip leading parentheses and trailing parentheses if present
+        let ket = rest.trim();
+        keterangan = Some(ket.to_string());
+    }
+
+    (area_km2, status, keterangan)
+}
+
+pub(crate) fn extract_islands(text: &str) -> (Vec<IslandSummary>, Vec<IslandRecord>) {
+    let summaries = parse_section_db(text);
+    let islands = parse_section_dc(text);
+    (summaries, islands)
+}
+
+/// Save parsed island summary records to a JSON file.
+pub(crate) fn save_parsed_island_summaries(
+    summaries: &[IslandSummary],
+    path: &Path,
+) -> Result<(), super::PipelineError> {
+    use super::PipelineResultExt;
+    let json_str = serde_json::to_string_pretty(summaries)
+        .ctx("failed to serialize parsed island summaries")?;
+    std::fs::write(path, json_str).ctx("failed to write parsed island summaries JSON")?;
+    eprintln!(
+        "Saved {} parsed island summaries to {:?}",
+        summaries.len(),
+        path
+    );
+    Ok(())
+}
+
+/// Save parsed island detail records to a JSON file.
+pub(crate) fn save_parsed_islands(
+    islands: &[IslandRecord],
+    path: &Path,
+) -> Result<(), super::PipelineError> {
+    use super::PipelineResultExt;
+    let json_str =
+        serde_json::to_string_pretty(islands).ctx("failed to serialize parsed islands")?;
+    std::fs::write(path, json_str).ctx("failed to write parsed islands JSON")?;
+    eprintln!("Saved {} parsed islands to {:?}", islands.len(), path);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3155,5 +3432,245 @@ C.K.1) Kabupaten Bandung Provinsi Jawa Barat
         assert_eq!(aceh_selatan.kec_count, 18);
         assert!(aceh_selatan.penduduk.is_some());
         assert!(aceh_selatan.population_male.is_some());
+    }
+
+    #[test]
+    fn test_parse_section_db_basic() {
+        let text = "\
+D.b. Rekapitulasi Jumlah Pulau Per Kabupaten/Kota Per Provinsi Seluruh Indonesia
+ D.b.1) Provinsi Aceh
+
+                                                            JUMLAH
+ NO    KODE                             NAMA                            KETERANGAN
+                                                             PULAU
+  1    11.01   Kabupaten Aceh Selatan                             6
+  2    11.03   Kabupaten Aceh Timur                               8
+  3    11.06   Kabupaten Aceh Besar                              42
+                                      TOTAL                     365
+";
+        let summaries = parse_section_db(text);
+        assert_eq!(summaries.len(), 3);
+        assert_eq!(summaries[0].code, "11.01");
+        assert_eq!(summaries[0].name, "Kabupaten Aceh Selatan");
+        assert_eq!(summaries[0].island_count, 6);
+        assert_eq!(summaries[0].province, "Aceh");
+        assert_eq!(summaries[1].island_count, 8);
+        assert_eq!(summaries[2].island_count, 42);
+    }
+
+    #[test]
+    fn test_parse_section_db_skip_zero() {
+        let text = "\
+ D.b.1) Provinsi Test
+  1    12.07   Kabupaten Deli Serdang                             0
+  2    12.14   Kabupaten Nias Selatan                            87
+";
+        let summaries = parse_section_db(text);
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].code, "12.14");
+        assert_eq!(summaries[0].island_count, 87);
+    }
+
+    #[test]
+    fn test_parse_section_dc_basic() {
+        let text = "\
+D.c. Rincian Kode dan Data Pulau Per Kabupaten/Kota Per Provinsi Seluruh Indonesia
+D.c.1) Provinsi Aceh
+ 11.01           Kabupaten Aceh Selatan                              6
+ 11.01.40001      Pulau Batukapal                                              03°19'03.44\" U 097°07'41.73\" T   0.0006     TBP
+ 11.01.40002      Pulau Batutunggal                                            03°24'55.00\" U 097°04'21.00\" T   0.0078     TBP
+ 11.01.40004      Pulau Mangki                                                 02°54'25.11\" U 097°26'18.51\" T              TBP
+ 11.01.40006      Pulau Trumon                                                 02°48'34.67\" U 097°35'36.51\" T              TBP
+ 11.06.40017      Pulau Breueh                                                 05°37'28.89\" U 095°09'18.31\" T   27.2422     BP
+ 11.06.40018      Pulau Bukulah Utara                                          05°37'29.97\" U 095°03'04.38\" T    0.0019
+ 11.06.40034      Pulau Rusa                                    05°16'39.00\" U 095°12'20.00\" T    0.2744    TBP     (PPKT)
+";
+        let islands = parse_section_dc(text);
+        assert!(
+            islands.len() >= 6,
+            "expected at least 6 islands, got {}",
+            islands.len()
+        );
+
+        let batukapal = islands.iter().find(|i| i.code == "11.01.40001").unwrap();
+        assert_eq!(batukapal.name, "Pulau Batukapal");
+        assert_eq!(batukapal.kabupaten_code, "11.01");
+        assert!(batukapal.latitude.is_some());
+        assert!(batukapal.longitude.is_some());
+        assert!(batukapal.area_km2.is_some());
+        assert_eq!(batukapal.status.as_deref(), Some("TBP"));
+        assert!(batukapal.keterangan.is_none());
+
+        let breueh = islands.iter().find(|i| i.code == "11.06.40017").unwrap();
+        assert_eq!(breueh.name, "Pulau Breueh");
+        assert_eq!(breueh.status.as_deref(), Some("BP"));
+        assert!(breueh.area_km2.is_some());
+        assert!((breueh.area_km2.unwrap() - 27.2422).abs() < 0.01);
+
+        let bukulah = islands.iter().find(|i| i.code == "11.06.40018").unwrap();
+        assert_eq!(bukulah.name, "Pulau Bukulah Utara");
+        assert!(bukulah.area_km2.is_some());
+        assert!(bukulah.status.is_none());
+
+        let rusa = islands.iter().find(|i| i.code == "11.06.40034").unwrap();
+        assert_eq!(rusa.status.as_deref(), Some("TBP"));
+        assert_eq!(rusa.keterangan.as_deref(), Some("(PPKT)"));
+    }
+
+    #[test]
+    fn test_parse_section_dc_southern_hemisphere() {
+        let text = "\
+ 96.01           Kabupaten Sorong                                   122
+ 96.01.40063      Pulau Mokon                                   01°10'13.01\" S 130°37'37.80\" T   0.0582     TBP
+";
+        let islands = parse_section_dc(text);
+        assert_eq!(islands.len(), 1);
+        let mokon = &islands[0];
+        assert_eq!(mokon.code, "96.01.40063");
+        let lat: f64 = mokon.latitude.as_ref().unwrap().parse().unwrap();
+        assert!(
+            lat < 0.0,
+            "Southern hemisphere latitude should be negative, got {}",
+            lat
+        );
+    }
+
+    #[test]
+    fn test_parse_island_tail_with_area_and_status() {
+        let coord_re = coord_regex();
+        let tail = "03°19'03.44\" U 097°07'41.73\" T   0.0006     TBP";
+        let (lat, lon, area, status, ket) = parse_island_tail(tail, &coord_re);
+        assert!(lat.is_some());
+        assert!(lon.is_some());
+        assert!(area.is_some());
+        assert_eq!(status.as_deref(), Some("TBP"));
+        assert!(ket.is_none());
+    }
+
+    #[test]
+    fn test_parse_island_tail_no_area() {
+        let coord_re = coord_regex();
+        let tail = "02°54'25.11\" U 097°26'18.51\" T              TBP";
+        let (lat, lon, area, status, ket) = parse_island_tail(tail, &coord_re);
+        assert!(lat.is_some());
+        assert!(lon.is_some());
+        assert!(area.is_none());
+        assert_eq!(status.as_deref(), Some("TBP"));
+        assert!(ket.is_none());
+    }
+
+    #[test]
+    fn test_parse_island_tail_with_keterangan() {
+        let coord_re = coord_regex();
+        let tail = "05°16'39.00\" U 095°12'20.00\" T    0.2744    TBP     (PPKT)";
+        let (_lat, _lon, area, status, ket) = parse_island_tail(tail, &coord_re);
+        assert!(area.is_some());
+        assert_eq!(status.as_deref(), Some("TBP"));
+        assert_eq!(ket.as_deref(), Some("(PPKT)"));
+    }
+
+    #[test]
+    fn test_parse_island_tail_only_coords() {
+        let coord_re = coord_regex();
+        let tail = "01°26'12.52\" S 131°58'41.87\" T";
+        let (lat, lon, area, status, ket) = parse_island_tail(tail, &coord_re);
+        assert!(lat.is_some());
+        assert!(lon.is_some());
+        assert!(area.is_none());
+        assert!(status.is_none());
+        assert!(ket.is_none());
+    }
+
+    #[test]
+    fn test_parse_island_fields_area_then_status() {
+        let (area, status, ket) = parse_island_fields("0.0006     TBP");
+        assert!(area.is_some());
+        assert_eq!(status.as_deref(), Some("TBP"));
+        assert!(ket.is_none());
+    }
+
+    #[test]
+    fn test_parse_island_fields_status_only() {
+        let (area, status, ket) = parse_island_fields("TBP");
+        assert!(area.is_none());
+        assert_eq!(status.as_deref(), Some("TBP"));
+        assert!(ket.is_none());
+    }
+
+    #[test]
+    fn test_parse_island_fields_status_then_keterangan() {
+        let (area, status, ket) =
+            parse_island_fields("TBP     Alokasi pulau pindah ke Kota Sibolga");
+        assert!(area.is_none());
+        assert_eq!(status.as_deref(), Some("TBP"));
+        assert_eq!(ket.as_deref(), Some("Alokasi pulau pindah ke Kota Sibolga"));
+    }
+
+    #[test]
+    fn test_parse_island_fields_empty() {
+        let (area, status, ket) = parse_island_fields("");
+        assert!(area.is_none());
+        assert!(status.is_none());
+        assert!(ket.is_none());
+    }
+
+    #[test]
+    fn test_functional_island_parsing() {
+        let text = std::fs::read_to_string("/tmp/wilayah/pdf_text.txt");
+        if text.is_err() {
+            eprintln!("Skipping functional test: /tmp/wilayah/pdf_text.txt not found");
+            return;
+        }
+        let text = text.unwrap();
+
+        let (summaries, islands) = extract_islands(&text);
+        eprintln!("Island summaries: {}", summaries.len());
+        eprintln!("Island records: {}", islands.len());
+
+        assert!(
+            summaries.len() > 250,
+            "expected 250+ island summaries, got {}",
+            summaries.len()
+        );
+        assert!(
+            islands.len() > 15000,
+            "expected 15000+ island records, got {}",
+            islands.len()
+        );
+
+        let aceh_summaries: Vec<_> = summaries.iter().filter(|s| s.province == "Aceh").collect();
+        assert!(
+            aceh_summaries.len() > 10,
+            "Aceh should have 10+ cities with islands"
+        );
+        let aceh_total: u32 = aceh_summaries.iter().map(|s| s.island_count).sum();
+        assert_eq!(aceh_total, 365, "Aceh island total should be 365");
+
+        let first_aceh = summaries.iter().find(|s| s.code == "11.01").unwrap();
+        assert_eq!(first_aceh.name, "Kabupaten Aceh Selatan");
+        assert_eq!(first_aceh.island_count, 6);
+
+        let batukapal = islands.iter().find(|i| i.code == "11.01.40001");
+        assert!(batukapal.is_some(), "Should find Pulau Batukapal");
+        let b = batukapal.unwrap();
+        assert_eq!(b.name, "Pulau Batukapal");
+        assert_eq!(b.kabupaten_code, "11.01");
+        assert!(b.latitude.is_some());
+        assert_eq!(b.status.as_deref(), Some("TBP"));
+
+        let breueh = islands.iter().find(|i| i.code == "11.06.40017");
+        assert!(breueh.is_some(), "Should find Pulau Breueh");
+        let br = breueh.unwrap();
+        assert_eq!(br.status.as_deref(), Some("BP"));
+
+        let southern = islands
+            .iter()
+            .filter(|i| i.latitude.as_ref().map_or(false, |l| l.starts_with('-')))
+            .count();
+        assert!(
+            southern > 100,
+            "Should have 100+ southern hemisphere islands, got {}",
+            southern
+        );
     }
 }

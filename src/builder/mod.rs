@@ -168,6 +168,10 @@ pub struct PipelineOutput {
     pub parsed_provinces_path: Option<PathBuf>,
     /// Path to the saved parsed cities JSON, if `save_parsed_villages` was set.
     pub parsed_cities_path: Option<PathBuf>,
+    /// Path to the saved parsed island summaries JSON, if `save_parsed_villages` was set.
+    pub parsed_island_summaries_path: Option<PathBuf>,
+    /// Path to the saved parsed islands JSON, if `save_parsed_villages` was set.
+    pub parsed_islands_path: Option<PathBuf>,
     /// Number of villages in the database.
     pub village_count: usize,
     /// SHA-256 hash of the database file, in hexadecimal.
@@ -366,6 +370,20 @@ impl Pipeline {
             (None, None)
         };
 
+        let (parsed_island_summaries_path, parsed_islands_path) =
+            if self.save_parsed_villages.is_some() {
+                let (summaries, islands) = parse::extract_islands(&text);
+                let sum_path = self.cache_dir.join("parsed_island_summaries.json");
+                parse::save_parsed_island_summaries(&summaries, &sum_path)?;
+
+                let isl_path = self.cache_dir.join("parsed_islands.json");
+                parse::save_parsed_islands(&islands, &isl_path)?;
+
+                (Some(sum_path), Some(isl_path))
+            } else {
+                (None, None)
+            };
+
         let big_data = big_api::fetch_big_data(
             &self.big_api_url,
             &self.cache_dir,
@@ -401,6 +419,8 @@ impl Pipeline {
             parsed_districts_path,
             parsed_provinces_path,
             parsed_cities_path,
+            parsed_island_summaries_path,
+            parsed_islands_path,
             village_count,
             sha256,
         })

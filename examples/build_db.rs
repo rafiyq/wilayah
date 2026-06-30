@@ -109,6 +109,12 @@ fn main() {
             if let Some(city) = &output.parsed_cities_path {
                 println!("Parsed cities: {}", city.display());
             }
+            if let Some(sum) = &output.parsed_island_summaries_path {
+                println!("Parsed island summaries: {}", sum.display());
+            }
+            if let Some(isl) = &output.parsed_islands_path {
+                println!("Parsed islands: {}", isl.display());
+            }
             println!("Villages: {}", output.village_count);
             println!("SHA-256: {}", output.sha256);
 
