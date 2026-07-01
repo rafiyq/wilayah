@@ -67,12 +67,18 @@ required-features = ["raw-sqlite"]
 
 [[test]]
 name = "query"
+required-features = ["db"]
 
 [[test]]
 name = "locate"
+required-features = ["db"]
 
 [[test]]
 name = "types"
+
+[[test]]
+name = "db_types"
+required-features = ["db"]
 
 [[test]]
 name = "builder"

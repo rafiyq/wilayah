@@ -25,10 +25,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        feature-flags:
-          - "--no-default-features"
-          - "--features raw-sqlite"
-          - "--features build-db"
+        include:
+          - feature-flags: "--no-default-features"
+            test-flags: "--lib"
+          - feature-flags: "--features raw-sqlite"
+            test-flags: ""
+          - feature-flags: "--features build-db"
+            test-flags: ""
     steps:
       - uses: actions/checkout@v6
       - uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -55,7 +58,7 @@ jobs:
       - name: Run clippy
         run: cargo clippy ${{ matrix.feature-flags }} -- -D warnings
       - name: Run tests
-        run: cargo test ${{ matrix.feature-flags }}
+        run: cargo test ${{ matrix.feature-flags }} ${{ matrix.test-flags }}
       - name: Check examples
         if: contains(matrix.feature-flags, 'build-db')
         run: cargo check --example build_db --features build-db
