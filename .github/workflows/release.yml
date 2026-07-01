@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
 
 jobs:
   release:
@@ -58,14 +59,14 @@ jobs:
         tag_name: ${{ github.ref_name }}
         name: ${{ github.ref_name }}
         body_path: release_notes.md
-      files: |
-        data/locations.db
-        data/locations-poly.db
-        data/cache/parsed_villages.json
-        data/cache/parsed_districts.json
-        data/cache/parsed_provinces.json
-        data/cache/parsed_cities.json
-        data/cache/parsed_island_summaries.json
-        data/cache/parsed_islands.json
-        data/cache/big_villages_with_polygons.json
-      generate_release_notes: false
+        files: |
+          data/locations.db
+          data/locations-poly.db
+          data/cache/parsed_villages.json
+          data/cache/parsed_districts.json
+          data/cache/parsed_provinces.json
+          data/cache/parsed_cities.json
+          data/cache/parsed_island_summaries.json
+          data/cache/parsed_islands.json
+          data/cache/big_villages_with_polygons.json
+        generate_release_notes: false
