@@ -32,6 +32,7 @@ All notable changes to this project will be documented in this file.
 - `parse_section_db()`, `parse_section_dc()`, `parse_island_tail()`, `parse_island_fields()`, `coord_regex()`, `extract_islands()` — island data parsing from PDF sections D.b + D.c
 - Population data parsing from Section E (male, female, total per kabupaten/kota)
 - 40 new unit tests (14 island tests + district/note/keyword tests)
+- `required-features = ["db"]` on serve example (prevented compilation with --no-default-features)
 
 ### Changed
 
@@ -49,7 +50,7 @@ All notable changes to this project will be documented in this file.
 - data_info() doc comment now notes it requires the db feature flag
 - Test regex patterns compiled once via OnceLock helpers (was 22 duplicate compilations)
 - **BREAKING**: `parent_ring_id` column removed from village_polygons schema (was always NULL; affects existing polygon DBs at 0.x)
-- `bbox`, `serialize_vertices`, `deserialize_vertices` changed from `pub` to `pub(crate)` — no longer part of public API
+- `bbox` and `serialize_vertices` feature-gated behind `cfg(any(test, feature = "build-db"))`; `deserialize_vertices` behind `cfg(any(test, feature = "db"))`
 - `deserialize_vertices` now returns `Result<Vec<(f64, f64)>, String>` instead of panicking on misaligned blobs
 - src/db.rs split into src/db/ module directory (mod.rs, query.rs, polygon.rs, meta.rs)
 - 5 unit tests moved from tests/locate.rs to inline #[cfg(test)] in src/types.rs
@@ -69,6 +70,9 @@ All notable changes to this project will be documented in this file.
 - Pipeline resummability limitation documented in Pipeline::run() doc comment
 - `PipelineOutput` gained 5 new sidecar JSON path fields (parsed_provinces, parsed_cities, parsed_districts, parsed_island_summaries, parsed_islands)
 - `Pipeline::run()` now extracts provinces, cities, and island data from PDF sections A, B, C headers, D.b, D.c, and E
+- CI workflow refactored to matrix strategy testing all feature combinations (no-default-features, raw-sqlite, build-db)
+- Release workflow clippy changed from --all-features to explicit per-feature-combo checks
+- Release workflow now uploads all 8 sidecar JSON files (previously only 2)
 
 ### Fixed
 

@@ -18,6 +18,7 @@ pub fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
 }
 
 /// Compute the axis-aligned bounding box of a polygon ring.
+#[cfg(any(test, feature = "build-db"))]
 pub(crate) fn bbox(ring: &[(f64, f64)]) -> (f64, f64, f64, f64) {
     let mut min_lat = f64::MAX;
     let mut max_lat = f64::MIN;
@@ -124,6 +125,7 @@ pub fn point_in_polygon(
 ///
 /// Each vertex is stored as `[lat_bytes, lon_bytes]` — 16 bytes per point.
 /// The ring is stored without repeating the closing vertex.
+#[cfg(any(test, feature = "build-db"))]
 pub(crate) fn serialize_vertices(ring: &[(f64, f64)]) -> Vec<u8> {
     let mut buf = Vec::with_capacity(ring.len() * 16);
     for &(lat, lon) in ring {
@@ -136,6 +138,7 @@ pub(crate) fn serialize_vertices(ring: &[(f64, f64)]) -> Vec<u8> {
 /// Deserialize polygon ring vertices from compact binary (little-endian f64 pairs).
 ///
 /// Each vertex is 16 bytes: `[lat, lon]`. The number of vertices is `blob.len() / 16`.
+#[cfg(any(test, feature = "db"))]
 pub(crate) fn deserialize_vertices(blob: &[u8]) -> Result<Vec<(f64, f64)>, String> {
     if !blob.len().is_multiple_of(16) {
         return Err(format!(

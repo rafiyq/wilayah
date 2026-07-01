@@ -10,13 +10,30 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  check:
+  fmt:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          components: clippy, rustfmt
+          components: rustfmt
+      - run: cargo fmt --check --all
+
+  check:
+    needs: fmt
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        feature-flags:
+          - "--no-default-features"
+          - "--features raw-sqlite"
+          - "--features build-db"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: clippy
 
       - name: Restore cargo cache
         uses: actions/cache@v5
@@ -25,22 +42,20 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.toml') }}
-          restore-keys: ${{ runner.os }}-cargo-
+          key: ${{ runner.os }}-cargo-${{ matrix.feature-flags }}-${{ hashFiles('Cargo.toml') }}
+          restore-keys: ${{ runner.os }}-cargo-${{ matrix.feature-flags }}-
 
       - name: Restore pre-built database cache
+        if: contains(matrix.feature-flags, 'db')
         uses: actions/cache@v5
         with:
           path: data/locations.db
-          key: ${{ runner.os }}-db-${{ hashFiles('src/builder/mod.rs', 'src/db.rs', 'Cargo.toml') }}
+          key: ${{ runner.os }}-db-${{ hashFiles('src/builder/mod.rs', 'src/db/', 'Cargo.toml') }}
 
-      - name: Check formatting
-        run: cargo fmt --check --all
       - name: Run clippy
-        run: cargo clippy --features raw-sqlite -- -D warnings
+        run: cargo clippy ${{ matrix.feature-flags }} -- -D warnings
       - name: Run tests
-        run: cargo test --features raw-sqlite
-      - name: Run build-db tests
-        run: cargo test --features build-db
-      - name: Check build-db example
+        run: cargo test ${{ matrix.feature-flags }}
+      - name: Check examples
+        if: contains(matrix.feature-flags, 'build-db')
         run: cargo check --example build_db --features build-db

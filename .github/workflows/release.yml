@@ -20,7 +20,7 @@ jobs:
       run: sudo apt-get update && sudo apt-get install -y poppler-utils
 
     - name: Build database from pipeline
-      run: cargo run --example build_db --features build-db -- --include-polygons --save-parsed-villages raw
+      run: cargo run --example build_db --features build-db -- --include-polygons --save-parsed-villages full
       env:
         WILAYAH_REFRESH_BIG: "1"
 
@@ -30,8 +30,12 @@ jobs:
     - name: Check formatting
       run: cargo fmt --check --all
 
-    - name: Run clippy
-      run: cargo clippy --all-features -- -D warnings
+    - name: Run clippy (no-default-features)
+      run: cargo clippy --no-default-features -- -D warnings
+    - name: Run clippy (raw-sqlite)
+      run: cargo clippy --features raw-sqlite -- -D warnings
+    - name: Run clippy (build-db)
+      run: cargo clippy --features build-db -- -D warnings
 
     - name: Publish to crates.io (dry-run)
       run: cargo publish --dry-run
@@ -58,5 +62,10 @@ jobs:
         data/locations.db
         data/locations-poly.db
         data/cache/parsed_villages.json
+        data/cache/parsed_districts.json
+        data/cache/parsed_provinces.json
+        data/cache/parsed_cities.json
+        data/cache/parsed_island_summaries.json
+        data/cache/parsed_islands.json
         data/cache/big_villages_with_polygons.json
-        generate_release_notes: false
+      generate_release_notes: false

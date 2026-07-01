@@ -52,6 +52,11 @@ name = "verify_legacy"
 path = "examples/verify_legacy.rs"
 required-features = ["raw-sqlite"]
 
+[[example]]
+name = "serve"
+path = "examples/serve.rs"
+required-features = ["db"]
+
 [[test]]
 name = "db_integrity"
 required-features = ["raw-sqlite"]
