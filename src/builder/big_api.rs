@@ -207,93 +207,106 @@ fn fetch_big_from_api(
     eprintln!("Fetching BIG village data from ArcGIS API...");
     fs::create_dir_all(cache_dir).ctx("failed to create cache directory")?;
 
-    let mut all_records = Vec::new();
-    let mut offset = 0;
-    let mut batch_num = 0;
+    let result = (|| -> Result<Vec<BigRecord>, PipelineError> {
+        let mut all_records = Vec::new();
+        let mut offset = 0;
+        let mut batch_num = 0;
 
-    loop {
-        batch_num += 1;
-        let url = format!(
-            "{}?where=KDEPUM+IS+NOT+NULL\
-            &outFields=KDEPUM,WADMKD,WADMKC,WADMKK,WADMPR\
-            &returnGeometry=true\
-            &f=json\
-            &resultRecordCount={}\u{0026}resultOffset={}",
-            api_url, BIG_BATCH_SIZE, offset
+        loop {
+            batch_num += 1;
+            let url = format!(
+                "{}?where=KDEPUM+IS+NOT+NULL\
+                &outFields=KDEPUM,WADMKD,WADMKC,WADMKK,WADMPR\
+                &returnGeometry=true\
+                &f=json\
+                &resultRecordCount={}\u{0026}resultOffset={}",
+                api_url, BIG_BATCH_SIZE, offset
+            );
+
+            if batch_num % 10 == 1 || batch_num <= 3 {
+                eprintln!("Fetching BIG batch {} (offset={})...", batch_num, offset);
+            }
+
+            let resp = util::fetch_with_retry(&url, 3)?;
+            let json: serde_json::Value =
+                serde_json::from_str(&resp).ctx("failed to parse BIG API response")?;
+
+            if let Some(error) = json.get("error") {
+                return Err(PipelineError::new(format!("BIG API error: {}", error)));
+            }
+
+            let features = json
+                .get("features")
+                .and_then(|f| f.as_array())
+                .ok_or_else(|| PipelineError::new("missing features in BIG response"))?;
+
+            if features.is_empty() {
+                break;
+            }
+
+            for feature in features {
+                let attrs = feature
+                    .get("attributes")
+                    .ok_or_else(|| PipelineError::new("missing attributes"))?;
+                let code = json_str(attrs, "KDEPUM");
+                let name = json_str(attrs, "WADMKD");
+                let district = json_str(attrs, "WADMKC");
+                let city = json_str(attrs, "WADMKK");
+                let province = json_str(attrs, "WADMPR");
+
+                if let (Some(code), Some(name)) = (code, name) {
+                    let geometry = feature.get("geometry");
+                    let (lat, lon, rings) = if let Some(geom) = geometry {
+                        let (centroid_lat, centroid_lon) = compute_centroid(geom);
+                        let extracted_rings = if include_polygons {
+                            extract_rings(geom)
+                        } else {
+                            None
+                        };
+                        (centroid_lat, centroid_lon, extracted_rings)
+                    } else {
+                        (0.0, 0.0, None)
+                    };
+
+                    all_records.push(BigRecord {
+                        code,
+                        name,
+                        district: district.unwrap_or_default(),
+                        city: city.unwrap_or_default(),
+                        province: province.unwrap_or_default(),
+                        lat,
+                        lon,
+                        rings,
+                    });
+                }
+            }
+
+            if features.len() < BIG_BATCH_SIZE {
+                break;
+            }
+
+            offset += BIG_BATCH_SIZE;
+        }
+
+        eprintln!(
+            "Fetched {} BIG village records in {} batches",
+            all_records.len(),
+            batch_num
         );
 
-        if batch_num % 10 == 1 || batch_num <= 3 {
-            eprintln!("Fetching BIG batch {} (offset={})...", batch_num, offset);
+        Ok(all_records)
+    })();
+
+    match result {
+        Ok(records) => Ok(records),
+        Err(e) => {
+            eprintln!(
+                "Warning: BIG API unavailable ({}). Proceeding without village coordinates.",
+                e
+            );
+            Ok(Vec::new())
         }
-
-        let resp = util::fetch_with_retry(&url, 3)?;
-        let json: serde_json::Value =
-            serde_json::from_str(&resp).ctx("failed to parse BIG API response")?;
-
-        if let Some(error) = json.get("error") {
-            return Err(PipelineError::new(format!("BIG API error: {}", error)));
-        }
-
-        let features = json
-            .get("features")
-            .and_then(|f| f.as_array())
-            .ok_or_else(|| PipelineError::new("missing features in BIG response"))?;
-
-        if features.is_empty() {
-            break;
-        }
-
-        for feature in features {
-            let attrs = feature
-                .get("attributes")
-                .ok_or_else(|| PipelineError::new("missing attributes"))?;
-            let code = json_str(attrs, "KDEPUM");
-            let name = json_str(attrs, "WADMKD");
-            let district = json_str(attrs, "WADMKC");
-            let city = json_str(attrs, "WADMKK");
-            let province = json_str(attrs, "WADMPR");
-
-            if let (Some(code), Some(name)) = (code, name) {
-                let geometry = feature.get("geometry");
-                let (lat, lon, rings) = if let Some(geom) = geometry {
-                    let (centroid_lat, centroid_lon) = compute_centroid(geom);
-                    let extracted_rings = if include_polygons {
-                        extract_rings(geom)
-                    } else {
-                        None
-                    };
-                    (centroid_lat, centroid_lon, extracted_rings)
-                } else {
-                    (0.0, 0.0, None)
-                };
-
-                all_records.push(BigRecord {
-                    code,
-                    name,
-                    district: district.unwrap_or_default(),
-                    city: city.unwrap_or_default(),
-                    province: province.unwrap_or_default(),
-                    lat,
-                    lon,
-                    rings,
-                });
-            }
-        }
-
-        if features.len() < BIG_BATCH_SIZE {
-            break;
-        }
-
-        offset += BIG_BATCH_SIZE;
     }
-
-    eprintln!(
-        "Fetched {} BIG village records in {} batches",
-        all_records.len(),
-        batch_num
-    );
-
-    Ok(all_records)
 }
 
 fn save_big_cache(

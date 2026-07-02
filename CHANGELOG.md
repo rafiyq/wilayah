@@ -9,6 +9,9 @@ All notable changes to this project will be documented in this file.
 - Poly DB path derivation refactored: `with_extension("poly.db")` replaced with `parent().join(constant)` — always produces `locations-poly.db` regardless of main DB filename; added `DEFAULT_DB_FILENAME`, `DEFAULT_POLY_DB_FILENAME`, `DEFAULT_OUTPUT_DIR` public constants
 - `Village::new()` constructor added — allows external construction despite `#[non_exhaustive]`; `with_dist_km()` builder-style setter for nearest-neighbor results
 - `Location::new()` constructor added — same rationale, enables external construction despite `#[non_exhaustive]`
+- BIG API failure now non-fatal: pipeline proceeds with empty coordinate data when the ArcGIS service is unreachable
+- `--skip-big` flag added to `build_db` example for explicitly skipping BIG API fetching
+- `save_legacy_snapshot` path in `build_db` example now respects `--cache-dir`
 
 ## 0.6.0 - 2026-07-01
 

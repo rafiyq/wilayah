@@ -6,11 +6,13 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mut pipeline = Pipeline::new();
     let mut save_legacy_snapshot = false;
+    let mut skip_big = false;
 
     if std::env::var("WILAYAH_REFRESH_BIG").as_deref() == Ok("1") {
         pipeline = pipeline.force_refresh_big(true);
     }
 
+    let mut cache_dir = std::path::PathBuf::from("data/cache");
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -25,7 +27,8 @@ fn main() {
             }
             "--cache-dir" => {
                 if i + 1 < args.len() {
-                    pipeline = pipeline.cache_dir(std::path::Path::new(&args[i + 1]));
+                    cache_dir = std::path::PathBuf::from(&args[i + 1]);
+                    pipeline = pipeline.cache_dir(&cache_dir);
                     i += 2;
                 } else {
                     eprintln!("error: --cache-dir requires a path");
@@ -52,6 +55,10 @@ fn main() {
             }
             "--force-refresh-big" => {
                 pipeline = pipeline.force_refresh_big(true);
+                i += 1;
+            }
+            "--skip-big" => {
+                skip_big = true;
                 i += 1;
             }
             "--save-legacy-snapshot" => {
@@ -90,6 +97,12 @@ fn main() {
         }
     }
 
+    if skip_big {
+        pipeline = pipeline
+            .force_refresh_big(false)
+            .big_api_url("http://127.0.0.1:9999/nonexistent");
+    }
+
     match pipeline.run() {
         Ok(output) => {
             println!("Pipeline completed successfully.");
@@ -119,7 +132,7 @@ fn main() {
             println!("SHA-256: {}", output.sha256);
 
             if save_legacy_snapshot {
-                if let Err(e) = save_legacy_snapshot_to(&output.db_path) {
+                if let Err(e) = save_legacy_snapshot_to(&output.db_path, &cache_dir) {
                     eprintln!("Failed to save legacy snapshot: {}", e);
                     std::process::exit(1);
                 }
@@ -134,7 +147,10 @@ fn main() {
     }
 }
 
-fn save_legacy_snapshot_to(db_path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+fn save_legacy_snapshot_to(
+    db_path: &std::path::Path,
+    cache_dir: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
     let conn = Connection::open(db_path)?;
 
     let mut stmt = conn.prepare(
@@ -156,9 +172,9 @@ fn save_legacy_snapshot_to(db_path: &std::path::Path) -> Result<(), Box<dyn std:
         snapshot.push(village);
     }
 
-    let snapshot_path = std::path::Path::new("data/cache/legacy_snapshot.json");
+    let snapshot_path = cache_dir.join("legacy_snapshot.json");
     std::fs::create_dir_all(snapshot_path.parent().unwrap())?;
-    let file = std::fs::File::create(snapshot_path)?;
+    let file = std::fs::File::create(&snapshot_path)?;
     serde_json::to_writer_pretty(file, &snapshot)?;
 
     eprintln!("Saved legacy snapshot to {}", snapshot_path.display());
