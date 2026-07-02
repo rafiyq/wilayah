@@ -1,6 +1,6 @@
 [package]
 name = "wilayah"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 license = "MIT"
 description = "Location lookup for Indonesian villages by GPS coordinates or name"

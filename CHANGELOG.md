@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## 0.6.1 - 2026-07-02
 
 ### Changed
 
@@ -11,7 +11,7 @@ All notable changes to this project will be documented in this file.
 - `Location::new()` constructor added — same rationale, enables external construction despite `#[non_exhaustive]`
 - BIG API failure now non-fatal: pipeline proceeds with empty coordinate data when the ArcGIS service is unreachable
 - `--skip-big` flag added to `build_db` example for explicitly skipping BIG API fetching
-- `save_legacy_snapshot` path in `build_db` example now respects `--cache-dir`
+- `save_legacy_snapshot` path in `build_db` example now respects `--cache-dir
 
 ## 0.6.0 - 2026-07-01
 
