@@ -178,6 +178,13 @@ pub struct PipelineOutput {
     pub sha256: String,
 }
 
+/// Default output database filename.
+pub const DEFAULT_DB_FILENAME: &str = "locations.db";
+/// Default polygon database filename (co-located with the main DB).
+pub const DEFAULT_POLY_DB_FILENAME: &str = "locations-poly.db";
+/// Default output directory for the database files.
+pub const DEFAULT_OUTPUT_DIR: &str = "data";
+
 /// Builder for configuring and running the database build pipeline.
 ///
 /// The pipeline fetches data from official sources (Kemendagri PDF and BIG ArcGIS API),
@@ -213,7 +220,7 @@ impl Pipeline {
             pdf_url: PDF_URL.to_string(),
             big_api_url: BIG_API_URL.to_string(),
             cache_dir: PathBuf::from("data/cache"),
-            output: PathBuf::from("data/locations.db"),
+            output: PathBuf::from(DEFAULT_OUTPUT_DIR).join(DEFAULT_DB_FILENAME),
             decree: DATA_DECREE.to_string(),
             force_refresh_big: false,
             ring_classification: RingClassification::SeparateRings,
@@ -400,7 +407,11 @@ impl Pipeline {
         db_create::build_db(&merged, &self.output, &self.decree, "official", build_date)?;
 
         let poly_db_path = if self.include_polygons {
-            let poly_path = self.output.with_extension("poly.db");
+            let poly_path = self
+                .output
+                .parent()
+                .unwrap_or(Path::new("."))
+                .join(DEFAULT_POLY_DB_FILENAME);
             db_create::build_poly_db(&big_data, &poly_path, self.ring_classification)?;
             Some(poly_path)
         } else {

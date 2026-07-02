@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+### Changed
+
+- Poly DB path derivation refactored: `with_extension("poly.db")` replaced with `parent().join(constant)` — always produces `locations-poly.db` regardless of main DB filename; added `DEFAULT_DB_FILENAME`, `DEFAULT_POLY_DB_FILENAME`, `DEFAULT_OUTPUT_DIR` public constants
+
 ## 0.6.0 - 2026-07-01
 
 ### Added
