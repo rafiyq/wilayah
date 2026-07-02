@@ -16,16 +16,15 @@ struct VillageRow {
 
 impl From<&VillageRow> for Village {
     fn from(r: &VillageRow) -> Self {
-        Village {
-            code: r.kode.clone(),
-            name: r.nama.clone(),
-            district: r.kecamatan.clone(),
-            city: r.kota.clone(),
-            province: r.provinsi.clone(),
-            lat: r.lat,
-            lon: r.lon,
-            dist_km: None,
-        }
+        Village::new(
+            r.kode.clone(),
+            r.nama.clone(),
+            r.kecamatan.clone(),
+            r.kota.clone(),
+            r.provinsi.clone(),
+            r.lat,
+            r.lon,
+        )
     }
 }
 

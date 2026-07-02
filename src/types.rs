@@ -71,6 +71,40 @@ impl fmt::Display for Village {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+impl Village {
+    /// Creates a new `Village` without a distance value.
+    ///
+    /// Use [`with_dist_km`](Village::with_dist_km) to set the distance
+    /// when the village comes from a nearest-neighbor lookup.
+    pub fn new(
+        code: String,
+        name: String,
+        district: String,
+        city: String,
+        province: String,
+        lat: f64,
+        lon: f64,
+    ) -> Self {
+        Self {
+            code,
+            name,
+            district,
+            city,
+            province,
+            lat,
+            lon,
+            dist_km: None,
+        }
+    }
+
+    /// Sets the distance from the query point in kilometers.
+    pub fn with_dist_km(mut self, dist_km: f64) -> Self {
+        self.dist_km = Some(dist_km);
+        self
+    }
+}
+
 /// Method used to determine the administrative location.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
@@ -142,6 +176,34 @@ impl fmt::Display for Location {
             "  {} {} ({:.1} km, {})",
             self.village_code, self.village, self.dist_km, self.method
         )
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+impl Location {
+    /// Creates a new `Location` with all fields.
+    pub fn new(
+        province: AdminLevel,
+        city: AdminLevel,
+        district: AdminLevel,
+        village: String,
+        village_code: String,
+        lat: f64,
+        lon: f64,
+        dist_km: f64,
+        method: LocateMethod,
+    ) -> Self {
+        Self {
+            province,
+            city,
+            district,
+            village,
+            village_code,
+            lat,
+            lon,
+            dist_km,
+            method,
+        }
     }
 }
 
