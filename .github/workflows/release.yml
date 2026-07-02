@@ -54,6 +54,9 @@ jobs:
     - name: Run clippy (build-db)
       run: cargo clippy --features build-db -- -D warnings
 
+    - name: Restore Cargo.lock before publish
+      run: git restore Cargo.lock
+
     - name: Publish to crates.io (dry-run)
       run: cargo publish --dry-run
 
