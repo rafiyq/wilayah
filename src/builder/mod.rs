@@ -352,18 +352,6 @@ impl Pipeline {
             let dist_path = self.cache_dir.join("parsed_districts.json");
             parse::save_parsed_districts(&districts, &dist_path)?;
 
-            Some(path)
-        } else {
-            None
-        };
-
-        let parsed_districts_path = if self.save_parsed_villages.is_some() {
-            Some(self.cache_dir.join("parsed_districts.json"))
-        } else {
-            None
-        };
-
-        let (parsed_provinces_path, parsed_cities_path) = if self.save_parsed_villages.is_some() {
             let provinces = parse::extract_provinces(&text);
             let prov_path = self.cache_dir.join("parsed_provinces.json");
             parse::save_parsed_provinces(&provinces, &prov_path)?;
@@ -372,24 +360,41 @@ impl Pipeline {
             let city_path = self.cache_dir.join("parsed_cities.json");
             parse::save_parsed_cities(&cities, &city_path)?;
 
-            (Some(prov_path), Some(city_path))
+            let (summaries, islands) = parse::extract_islands(&text);
+            let sum_path = self.cache_dir.join("parsed_island_summaries.json");
+            parse::save_parsed_island_summaries(&summaries, &sum_path)?;
+            let isl_path = self.cache_dir.join("parsed_islands.json");
+            parse::save_parsed_islands(&islands, &isl_path)?;
+
+            Some(path)
         } else {
-            (None, None)
+            None
         };
 
-        let (parsed_island_summaries_path, parsed_islands_path) =
-            if self.save_parsed_villages.is_some() {
-                let (summaries, islands) = parse::extract_islands(&text);
-                let sum_path = self.cache_dir.join("parsed_island_summaries.json");
-                parse::save_parsed_island_summaries(&summaries, &sum_path)?;
+        let parsed_districts_path = self
+            .save_parsed_villages
+            .is_some()
+            .then(|| self.cache_dir.join("parsed_districts.json"));
 
-                let isl_path = self.cache_dir.join("parsed_islands.json");
-                parse::save_parsed_islands(&islands, &isl_path)?;
+        let parsed_provinces_path = self
+            .save_parsed_villages
+            .is_some()
+            .then(|| self.cache_dir.join("parsed_provinces.json"));
 
-                (Some(sum_path), Some(isl_path))
-            } else {
-                (None, None)
-            };
+        let parsed_cities_path = self
+            .save_parsed_villages
+            .is_some()
+            .then(|| self.cache_dir.join("parsed_cities.json"));
+
+        let parsed_island_summaries_path = self
+            .save_parsed_villages
+            .is_some()
+            .then(|| self.cache_dir.join("parsed_island_summaries.json"));
+
+        let parsed_islands_path = self
+            .save_parsed_villages
+            .is_some()
+            .then(|| self.cache_dir.join("parsed_islands.json"));
 
         let big_data = big_api::fetch_big_data(
             &self.big_api_url,

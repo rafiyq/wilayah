@@ -99,12 +99,15 @@ impl Database {
         self.conn.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn lock_poly(&self) -> MutexGuard<'_, Connection> {
+    fn lock_poly(&self) -> Result<MutexGuard<'_, Connection>> {
         self.poly_conn
             .as_ref()
-            .expect("lock_poly called without polygon DB")
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .ok_or_else(|| Error {
+                inner: rusqlite::Error::InvalidParameterName(
+                    "lock_poly called without polygon DB".into(),
+                ),
+            })
+            .map(|conn| conn.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
     /// Open the embedded location database.
@@ -332,7 +335,7 @@ impl Database {
     pub fn locate(&self, lat: f64, lon: f64) -> Result<Option<Location>> {
         if self.poly_conn.is_some() {
             let candidates = {
-                let poly = self.lock_poly();
+                let poly = self.lock_poly()?;
                 polygon::query_polygon_candidates(&poly, lat, lon)?
             };
             if let Some(loc) =
@@ -368,7 +371,9 @@ impl Database {
         let count: i64 =
             self.lock_conn()
                 .query_row("SELECT COUNT(*) FROM locations", [], |row| row.get(0))?;
-        Ok(u32::try_from(count).expect("village count exceeds u32 range"))
+        u32::try_from(count).map_err(|e| Error {
+            inner: rusqlite::Error::InvalidParameterName(format!("village count overflow: {}", e)),
+        })
     }
 }
 

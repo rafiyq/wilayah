@@ -1749,17 +1749,25 @@ pub(crate) fn extract_cities(text: &str) -> Vec<CityRecord> {
         .collect()
 }
 
+fn save_parsed_json<T: serde::Serialize>(
+    data: &[T],
+    label: &str,
+    path: &Path,
+) -> Result<(), super::PipelineError> {
+    use super::PipelineResultExt;
+    let json_str =
+        serde_json::to_string_pretty(data).ctx(&format!("failed to serialize parsed {}", label))?;
+    std::fs::write(path, &json_str).ctx(&format!("failed to write parsed {} JSON", label))?;
+    eprintln!("Saved {} parsed {} to {:?}", data.len(), label, path);
+    Ok(())
+}
+
 /// Save parsed province records to a JSON file.
 pub(crate) fn save_parsed_provinces(
     provinces: &[ProvinceRecord],
     path: &Path,
 ) -> Result<(), super::PipelineError> {
-    use super::PipelineResultExt;
-    let json_str =
-        serde_json::to_string_pretty(provinces).ctx("failed to serialize parsed provinces")?;
-    std::fs::write(path, json_str).ctx("failed to write parsed provinces JSON")?;
-    eprintln!("Saved {} parsed provinces to {:?}", provinces.len(), path);
-    Ok(())
+    save_parsed_json(provinces, "provinces", path)
 }
 
 /// Save parsed city (kabupaten/kota) records to a JSON file.
@@ -1767,11 +1775,7 @@ pub(crate) fn save_parsed_cities(
     cities: &[CityRecord],
     path: &Path,
 ) -> Result<(), super::PipelineError> {
-    use super::PipelineResultExt;
-    let json_str = serde_json::to_string_pretty(cities).ctx("failed to serialize parsed cities")?;
-    std::fs::write(path, json_str).ctx("failed to write parsed cities JSON")?;
-    eprintln!("Saved {} parsed cities to {:?}", cities.len(), path);
-    Ok(())
+    save_parsed_json(cities, "cities", path)
 }
 
 /// Save parsed village records to a JSON file.
@@ -1833,12 +1837,7 @@ pub(crate) fn save_parsed_districts(
     districts: &[DistrictRecord],
     path: &Path,
 ) -> Result<(), super::PipelineError> {
-    use super::PipelineResultExt;
-    let json_str =
-        serde_json::to_string_pretty(districts).ctx("failed to serialize parsed districts")?;
-    std::fs::write(path, json_str).ctx("failed to write parsed districts JSON")?;
-    eprintln!("Saved {} parsed districts to {:?}", districts.len(), path);
-    Ok(())
+    save_parsed_json(districts, "districts", path)
 }
 
 fn parse_section_db(text: &str) -> Vec<IslandSummary> {
@@ -2066,16 +2065,7 @@ pub(crate) fn save_parsed_island_summaries(
     summaries: &[IslandSummary],
     path: &Path,
 ) -> Result<(), super::PipelineError> {
-    use super::PipelineResultExt;
-    let json_str = serde_json::to_string_pretty(summaries)
-        .ctx("failed to serialize parsed island summaries")?;
-    std::fs::write(path, json_str).ctx("failed to write parsed island summaries JSON")?;
-    eprintln!(
-        "Saved {} parsed island summaries to {:?}",
-        summaries.len(),
-        path
-    );
-    Ok(())
+    save_parsed_json(summaries, "island summaries", path)
 }
 
 /// Save parsed island detail records to a JSON file.
@@ -2083,12 +2073,7 @@ pub(crate) fn save_parsed_islands(
     islands: &[IslandRecord],
     path: &Path,
 ) -> Result<(), super::PipelineError> {
-    use super::PipelineResultExt;
-    let json_str =
-        serde_json::to_string_pretty(islands).ctx("failed to serialize parsed islands")?;
-    std::fs::write(path, json_str).ctx("failed to write parsed islands JSON")?;
-    eprintln!("Saved {} parsed islands to {:?}", islands.len(), path);
-    Ok(())
+    save_parsed_json(islands, "islands", path)
 }
 
 #[cfg(test)]
