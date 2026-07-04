@@ -295,6 +295,26 @@ struct NoteMatch {
     keyword: &'static str,
 }
 
+/// Find the earliest occurrence of any keyword in `text`, optionally requiring a validator.
+fn find_earliest_keyword(
+    text: &str,
+    keywords: &[&'static str],
+    validator: impl Fn(&str, usize, &str) -> bool,
+) -> Option<(usize, &'static str)> {
+    let text_lower = &text.to_lowercase();
+    let mut matches: Vec<(usize, &'static str)> = Vec::new();
+    for kw in keywords {
+        let kw_lower = kw.to_lowercase();
+        let kw_len = kw_lower.len();
+        if let Some(pos) = text_lower.find(&kw_lower) {
+            if is_word_boundary(text_lower, pos, kw_len) && validator(text_lower, pos, &kw_lower) {
+                matches.push((pos, *kw));
+            }
+        }
+    }
+    matches.into_iter().min_by_key(|(pos, _)| *pos)
+}
+
 /// Find the earliest note boundary in `raw` by checking all note keywords.
 ///
 /// Self-validating keywords always mark a note boundary.
@@ -303,32 +323,18 @@ struct NoteMatch {
 ///
 /// Returns the earliest match if found, or `None` if no note keyword was detected.
 fn find_note_boundary(raw_lower: &str) -> Option<NoteMatch> {
-    let mut best: Option<NoteMatch> = None;
-
-    for keyword in SELF_VALIDATING_KEYWORDS {
-        let kw_lower = keyword.to_lowercase();
-        if let Some(pos) = raw_lower.find(&kw_lower) {
-            if is_word_boundary(raw_lower, pos, kw_lower.len())
-                && best.as_ref().is_none_or(|b| pos < b.pos)
-            {
-                best = Some(NoteMatch { pos, keyword });
-            }
-        }
-    }
-
-    for keyword in REFERENCE_VALIDATED_KEYWORDS {
-        let kw_lower = keyword.to_lowercase();
-        if let Some(pos) = raw_lower.find(&kw_lower) {
-            if is_word_boundary(raw_lower, pos, kw_lower.len())
-                && has_reference_indicator(raw_lower, pos + kw_lower.len(), 30)
-                && best.as_ref().is_none_or(|b| pos < b.pos)
-            {
-                best = Some(NoteMatch { pos, keyword });
-            }
-        }
-    }
-
-    best
+    let self_match = find_earliest_keyword(raw_lower, SELF_VALIDATING_KEYWORDS, |_, _, _| true);
+    let ref_match =
+        find_earliest_keyword(raw_lower, REFERENCE_VALIDATED_KEYWORDS, |text, pos, kw| {
+            has_reference_indicator(text, pos + kw.len(), 30)
+        });
+    let best = match (self_match, ref_match) {
+        (Some((sp, _)), Some((rp, rk))) if rp < sp => Some((rp, rk)),
+        (Some((sp, sk)), _) => Some((sp, sk)),
+        (_, Some((rp, rk))) => Some((rp, rk)),
+        _ => None,
+    };
+    best.map(|(pos, keyword)| NoteMatch { pos, keyword })
 }
 
 /// Pre-compiled regex patterns for parsing village records from PDF text.
@@ -420,39 +426,16 @@ impl VillageParser {
             }
 
             if let Some(cont) = is_keterangan_continuation(line) {
-                if let Some(last) = villages.last_mut() {
-                    if let Some(ref mut kt) = last.keterangan {
-                        kt.push(' ');
-                        kt.push_str(&cont);
-                    }
-                }
+                append_keterangan(&mut villages, &cont);
             }
         }
 
         eprintln!("Parsed {} villages", villages.len());
 
-        let lowercase_note_prefixes = [
-            "semula",
-            "semual",
-            "semuila",
-            "smula",
-            "menjadi",
-            "perbaikan",
-            "pemekaran",
-            "koreksi",
-            "perda",
-            "perbup",
-            "kepbup",
-            "berdasarkan",
-            "pp",
-            "uu",
-            "qanun",
-            "berubah",
-            "penataan",
-            "penghapusan",
-            "penggabungan",
-            "pembentukan",
-        ];
+        let lowercase_note_prefixes: Vec<String> = DISTRICT_NOTE_KEYWORDS
+            .iter()
+            .map(|kw| kw.to_lowercase())
+            .collect();
 
         for v in &mut villages {
             if let Some(ref note) = v.district_note {
@@ -461,7 +444,7 @@ impl VillageParser {
                     let note_lower = note.to_lowercase();
                     let is_real_note = lowercase_note_prefixes
                         .iter()
-                        .any(|kw| note_lower.starts_with(kw));
+                        .any(|kw| note_lower.starts_with(kw.as_str()));
                     if !is_real_note {
                         v.district = format!("{}{}", v.district, note);
                         v.district_note = None;
@@ -533,6 +516,34 @@ const DISTRICT_NOTE_KEYWORDS: &[&str] = &[
 /// Minimum consecutive spaces that indicate a column boundary in pdftotext -layout output.
 const COLUMN_GAP_SPACES: usize = 3;
 
+trait HasKeterangan {
+    fn keterangan_mut(&mut self) -> &mut Option<String>;
+}
+
+fn append_keterangan<T: HasKeterangan>(items: &mut [T], text: &str) {
+    if let Some(last) = items.last_mut() {
+        let ket = last.keterangan_mut();
+        if let Some(ref mut kt) = *ket {
+            kt.push(' ');
+            kt.push_str(text);
+        } else {
+            *ket = Some(text.to_string());
+        }
+    }
+}
+
+impl HasKeterangan for VillageRecord {
+    fn keterangan_mut(&mut self) -> &mut Option<String> {
+        &mut self.keterangan
+    }
+}
+
+impl HasKeterangan for CCityHeader {
+    fn keterangan_mut(&mut self) -> &mut Option<String> {
+        &mut self.keterangan
+    }
+}
+
 /// Find the byte position where the first column gap (3+ consecutive spaces) starts.
 ///
 /// Returns `Some(pos)` where `pos` is the byte offset of the first space in the
@@ -568,21 +579,21 @@ fn is_keterangan_continuation(line: &str) -> Option<String> {
     Some(content.to_string())
 }
 
-fn first_gap_position(raw: &str) -> Option<usize> {
-    let bytes = raw.as_bytes();
-    let len = bytes.len();
-    let mut i = 0;
-    while i < len {
-        if bytes[i] == b' ' {
-            let start = i;
-            while i < len && bytes[i] == b' ' {
-                i += 1;
+fn find_column_gap(s: &str) -> Option<usize> {
+    let mut consecutive = 0usize;
+    let mut gap_start: Option<usize> = None;
+    for (i, c) in s.char_indices() {
+        if c == ' ' {
+            if consecutive == 0 {
+                gap_start = Some(i);
             }
-            if i - start >= COLUMN_GAP_SPACES {
-                return Some(start);
-            }
+            consecutive += 1;
         } else {
-            i += 1;
+            if consecutive >= COLUMN_GAP_SPACES {
+                return gap_start;
+            }
+            consecutive = 0;
+            gap_start = None;
         }
     }
     None
@@ -731,22 +742,8 @@ fn strip_district_note(name: &str) -> (&str, Option<String>) {
 /// actual note text. This function finds the earliest note keyword in the
 /// suffix and returns the text from that point onward.
 fn extract_suffix_note(suffix: String) -> Option<String> {
-    let suffix_lower = suffix.to_lowercase();
-    let earliest = DISTRICT_NOTE_KEYWORDS
-        .iter()
-        .filter_map(|kw| {
-            let kw_lower = kw.to_lowercase();
-            suffix_lower.find(&kw_lower).and_then(|pos| {
-                if is_word_boundary(&suffix_lower, pos, kw_lower.len()) {
-                    Some((pos, kw))
-                } else {
-                    None
-                }
-            })
-        })
-        .min_by_key(|(pos, _)| *pos);
-
-    earliest.map(|(pos, _)| suffix[pos..].trim().to_string())
+    find_earliest_keyword(&suffix, DISTRICT_NOTE_KEYWORDS, |_, _, _| true)
+        .map(|(pos, _)| suffix[pos..].trim().to_string())
 }
 
 /// Parse kel/desa counts from the suffix parts after the district name.
@@ -949,7 +946,7 @@ pub(crate) fn extract_village_name(
 
     let raw_lower = raw.to_lowercase();
     let note_match = find_note_boundary(&raw_lower);
-    let gap_pos = first_gap_position(raw);
+    let gap_pos = find_column_gap(raw);
 
     let (cleaned, keterangan_text) = if let Some(gp) = gap_pos {
         let keyword_pos = note_match.as_ref().map_or(usize::MAX, |n| n.pos);
@@ -1270,14 +1267,7 @@ fn parse_c_city_headers(text: &str) -> Vec<CCityHeader> {
         let trimmed = line.trim();
 
         if current_keterangan_continuation && is_keterangan_continuation(line).is_some() {
-            if let Some(last) = cities.last_mut() {
-                if let Some(ref mut ket) = last.keterangan {
-                    ket.push(' ');
-                    ket.push_str(trimmed);
-                } else {
-                    last.keterangan = Some(trimmed.to_string());
-                }
-            }
+            append_keterangan(&mut cities, trimmed);
             continue;
         }
         current_keterangan_continuation = false;
@@ -1404,23 +1394,7 @@ fn split_name_ibukota_by_gap(
 }
 
 fn find_first_large_gap(s: &str) -> Option<usize> {
-    let mut consecutive_spaces = 0usize;
-    let mut gap_start: Option<usize> = None;
-    for (i, c) in s.char_indices() {
-        if c == ' ' {
-            if consecutive_spaces == 0 {
-                gap_start = Some(i);
-            }
-            consecutive_spaces += 1;
-        } else {
-            if consecutive_spaces >= 3 {
-                return gap_start;
-            }
-            consecutive_spaces = 0;
-            gap_start = None;
-        }
-    }
-    None
+    find_column_gap(s)
 }
 
 type CityFields = (
@@ -1595,6 +1569,23 @@ fn recover_ocr_number(s: &str) -> Option<u64> {
     parse_indonesian_int(&repaired)
 }
 
+fn build_population_maps(
+    section_e: &[SectionEEntry],
+) -> (
+    std::collections::HashMap<String, u64>,
+    std::collections::HashMap<String, u64>,
+) {
+    let male_map = section_e
+        .iter()
+        .filter_map(|e| e.male.map(|m| (e.code.clone(), m)))
+        .collect();
+    let female_map = section_e
+        .iter()
+        .filter_map(|e| e.female.map(|f| (e.code.clone(), f)))
+        .collect();
+    (male_map, female_map)
+}
+
 pub(crate) fn extract_provinces(text: &str) -> Vec<ProvinceRecord> {
     let section_a = parse_section_a(text);
     let c_headers = parse_c_province_headers(text);
@@ -1610,15 +1601,7 @@ pub(crate) fn extract_provinces(text: &str) -> Vec<ProvinceRecord> {
         .filter_map(|h| h.keterangan.as_ref().map(|k| (h.code.clone(), k.clone())))
         .collect();
 
-    let male_map: std::collections::HashMap<String, u64> = section_e
-        .iter()
-        .filter_map(|e| e.male.map(|m| (e.code.clone(), m)))
-        .collect();
-
-    let female_map: std::collections::HashMap<String, u64> = section_e
-        .iter()
-        .filter_map(|e| e.female.map(|f| (e.code.clone(), f)))
-        .collect();
+    let (male_map, female_map) = build_population_maps(&section_e);
 
     section_a
         .into_iter()
@@ -1651,15 +1634,7 @@ pub(crate) fn extract_cities(text: &str) -> Vec<CityRecord> {
     let c_cities = parse_c_city_headers(text);
     let section_e = parse_section_e(text);
 
-    let male_map: std::collections::HashMap<String, u64> = section_e
-        .iter()
-        .filter_map(|e| e.male.map(|m| (e.code.clone(), m)))
-        .collect();
-
-    let female_map: std::collections::HashMap<String, u64> = section_e
-        .iter()
-        .filter_map(|e| e.female.map(|f| (e.code.clone(), f)))
-        .collect();
+    let (male_map, female_map) = build_population_maps(&section_e);
 
     c_cities
         .into_iter()
@@ -2729,21 +2704,21 @@ C.K.1) Kabupaten Bandung Provinsi Jawa Barat
     }
 
     #[test]
-    fn test_first_gap_position_with_gap() {
+    fn test_find_column_gap_with_gap() {
         assert_eq!(
-            first_gap_position("Ujong Mangki                             Perbaikan nama"),
+            find_column_gap("Ujong Mangki                             Perbaikan nama"),
             Some(12)
         );
     }
 
     #[test]
-    fn test_first_gap_position_no_gap() {
-        assert_eq!(first_gap_position("Keude Bakongan"), None);
+    fn test_find_column_gap_no_gap() {
+        assert_eq!(find_column_gap("Keude Bakongan"), None);
     }
 
     #[test]
-    fn test_first_gap_position_two_spaces_not_gap() {
-        assert_eq!(first_gap_position("Hello  World"), None);
+    fn test_find_column_gap_two_spaces_not_gap() {
+        assert_eq!(find_column_gap("Hello  World"), None);
     }
 
     #[test]
