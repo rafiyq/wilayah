@@ -253,6 +253,30 @@ const REFERENCE_INDICATORS: &[&str] = &[
 /// Maximum number of words in an extracted village name.
 const MAX_NAME_WORDS: usize = 5;
 
+/// Maximum bytes after a keyword to scan for a reference indicator.
+const REFERENCE_WINDOW: usize = 30;
+
+/// Minimum leading spaces for a continuation line to be keterangan text.
+const KETERANGAN_CONTINUATION_INDENT: usize = 20;
+
+/// Maximum trailing digits that look like a count (not part of name).
+const MAX_TRAILING_COUNT_DIGITS: usize = 3;
+
+/// Minimum word length (chars) for trailing-period stripping.
+const MIN_WORD_LEN_FOR_PERIOD_STRIP: usize = 4;
+
+/// Minimum tokens expected in Section A (province table) rows.
+const MIN_TOKENS_SECTION_A: usize = 8;
+
+/// Minimum tokens expected in header lines (province/city rest).
+const MIN_TOKENS_HEADER: usize = 3;
+
+/// Minimum numeric fields expected in province rest.
+const MIN_NUM_FIELDS_PROVINCE: usize = 5;
+
+/// Minimum numeric fields expected in city rest.
+const MIN_NUM_FIELDS_CITY: usize = 2;
+
 /// Check whether the text following a keyword contains a reference-like pattern.
 ///
 /// Scans up to `window` bytes after `pos` for any indicator that confirms
@@ -326,7 +350,7 @@ fn find_note_boundary(raw_lower: &str) -> Option<NoteMatch> {
     let self_match = find_earliest_keyword(raw_lower, SELF_VALIDATING_KEYWORDS, |_, _, _| true);
     let ref_match =
         find_earliest_keyword(raw_lower, REFERENCE_VALIDATED_KEYWORDS, |text, pos, kw| {
-            has_reference_indicator(text, pos + kw.len(), 30)
+            has_reference_indicator(text, pos + kw.len(), REFERENCE_WINDOW)
         });
     let best = match (self_match, ref_match) {
         (Some((sp, _)), Some((rp, rk))) if rp < sp => Some((rp, rk)),
@@ -432,28 +456,34 @@ impl VillageParser {
 
         eprintln!("Parsed {} villages", villages.len());
 
-        let lowercase_note_prefixes: Vec<String> = DISTRICT_NOTE_KEYWORDS
-            .iter()
-            .map(|kw| kw.to_lowercase())
-            .collect();
+        fixup_district_notes(&mut villages);
 
-        for v in &mut villages {
-            if let Some(ref note) = v.district_note {
-                let note_bytes = note.as_bytes();
-                if note_bytes.first().is_none_or(|c| c.is_ascii_lowercase()) {
-                    let note_lower = note.to_lowercase();
-                    let is_real_note = lowercase_note_prefixes
-                        .iter()
-                        .any(|kw| note_lower.starts_with(kw.as_str()));
-                    if !is_real_note {
-                        v.district = format!("{}{}", v.district, note);
-                        v.district_note = None;
-                    }
+        villages
+    }
+}
+
+/// If a district_note looks like a suffix appended to the district name rather than
+/// a real annotation (doesn't match known note keywords), merge it back into the name.
+fn fixup_district_notes(villages: &mut [VillageRecord]) {
+    let lowercase_note_prefixes: Vec<String> = DISTRICT_NOTE_KEYWORDS
+        .iter()
+        .map(|kw| kw.to_lowercase())
+        .collect();
+
+    for v in villages {
+        if let Some(ref note) = v.district_note {
+            let note_bytes = note.as_bytes();
+            if note_bytes.first().is_none_or(|c| c.is_ascii_lowercase()) {
+                let note_lower = note.to_lowercase();
+                let is_real_note = lowercase_note_prefixes
+                    .iter()
+                    .any(|kw| note_lower.starts_with(kw.as_str()));
+                if !is_real_note {
+                    v.district = format!("{}{}", v.district, note);
+                    v.district_note = None;
                 }
             }
         }
-
-        villages
     }
 }
 
@@ -566,7 +596,7 @@ fn is_keterangan_continuation(line: &str) -> Option<String> {
         return None;
     }
     let leading = line.len() - line.trim_start().len();
-    if leading < 20 {
+    if leading < KETERANGAN_CONTINUATION_INDENT {
         return None;
     }
     let content = trimmed.trim_start();
@@ -856,7 +886,7 @@ fn strip_trailing_count(name: &str) -> &str {
     }
 
     let digit_count = len - digit_end;
-    if digit_count == 0 || digit_count > 3 {
+    if digit_count == 0 || digit_count > MAX_TRAILING_COUNT_DIGITS {
         return trimmed;
     }
 
@@ -895,7 +925,7 @@ fn strip_trailing_period(name: &mut String) {
     }
     let before_period = &name[..name.len() - 1];
     let last_word = before_period.split_whitespace().last().unwrap_or("");
-    if last_word.len() >= 4 {
+    if last_word.len() >= MIN_WORD_LEN_FOR_PERIOD_STRIP {
         name.truncate(name.len() - 1);
     }
 }
@@ -934,6 +964,51 @@ fn capitalize_all_lowercase(name: &mut String) {
 ///    - If keyword is before the gap: keyword wins (note prefix in name column)
 ///    - If gap is before the keyword: gap wins (undetected annotation after gap)
 /// 4. Truncate to `MAX_NAME_WORDS` words
+
+/// Resolve the cleaned name and optional keterangan by choosing the cutoff between
+/// a column-gap boundary and a note-keyword boundary (whichever comes first).
+fn resolve_name_and_keterangan<'a>(
+    raw: &'a str,
+    note_match: &Option<NoteMatch>,
+    gap_pos: Option<usize>,
+) -> Option<(&'a str, Option<String>)> {
+    if let Some(gp) = gap_pos {
+        let keyword_pos = note_match.as_ref().map_or(usize::MAX, |n| n.pos);
+        if keyword_pos < gp {
+            let c = raw[..keyword_pos].trim();
+            if c.is_empty() {
+                return None;
+            }
+            Some((c, Some(raw[keyword_pos..].trim().to_string())))
+        } else {
+            let c = raw[..gp].trim();
+            if c.is_empty() {
+                return None;
+            }
+            let tail = raw[gp..].trim();
+            Some((
+                c,
+                if tail.is_empty() {
+                    None
+                } else {
+                    Some(tail.to_string())
+                },
+            ))
+        }
+    } else {
+        match note_match {
+            Some(note) => {
+                let c = raw[..note.pos].trim();
+                if c.is_empty() {
+                    return None;
+                }
+                Some((c, Some(raw[note.pos..].trim().to_string())))
+            }
+            None => Some((raw, None)),
+        }
+    }
+}
+
 pub(crate) fn extract_village_name(
     after_code: &str,
     name_re: &regex::Regex,
@@ -948,41 +1023,7 @@ pub(crate) fn extract_village_name(
     let note_match = find_note_boundary(&raw_lower);
     let gap_pos = find_column_gap(raw);
 
-    let (cleaned, keterangan_text) = if let Some(gp) = gap_pos {
-        let keyword_pos = note_match.as_ref().map_or(usize::MAX, |n| n.pos);
-        if keyword_pos < gp {
-            let c = raw[..keyword_pos].trim();
-            if c.is_empty() {
-                return None;
-            }
-            (c, Some(raw[keyword_pos..].trim().to_string()))
-        } else {
-            let c = raw[..gp].trim();
-            if c.is_empty() {
-                return None;
-            }
-            let tail = raw[gp..].trim();
-            (
-                c,
-                if tail.is_empty() {
-                    None
-                } else {
-                    Some(tail.to_string())
-                },
-            )
-        }
-    } else {
-        match &note_match {
-            Some(note) => {
-                let c = raw[..note.pos].trim();
-                if c.is_empty() {
-                    return None;
-                }
-                (c, Some(raw[note.pos..].trim().to_string()))
-            }
-            None => (raw, None),
-        }
-    };
+    let (cleaned, keterangan_text) = resolve_name_and_keterangan(raw, &note_match, gap_pos)?;
 
     let mut truncated: String = cleaned
         .split_whitespace()
@@ -1125,7 +1166,7 @@ fn parse_section_a(text: &str) -> Vec<SectionAProvince> {
             let tail = cap[3].trim();
 
             let tokens: Vec<&str> = tail.split_whitespace().collect();
-            if tokens.len() < 8 {
+            if tokens.len() < MIN_TOKENS_SECTION_A {
                 continue;
             }
 
@@ -1211,7 +1252,7 @@ fn find_keterangan_in_num_fields(num_fields: &[&str]) -> Option<String> {
 
 fn parse_province_rest(rest: &str) -> Option<(String, Option<String>, Option<String>)> {
     let tokens: Vec<&str> = rest.split_whitespace().collect();
-    if tokens.len() < 3 {
+    if tokens.len() < MIN_TOKENS_HEADER {
         return None;
     }
 
@@ -1249,7 +1290,7 @@ fn parse_province_rest(rest: &str) -> Option<(String, Option<String>, Option<Str
 
     let name = tokens[..num_start].join(" ");
     let num_fields = &tokens[num_start..];
-    if num_fields.len() < 5 {
+    if num_fields.len() < MIN_NUM_FIELDS_PROVINCE {
         return None;
     }
 
@@ -1277,7 +1318,7 @@ fn parse_c_city_headers(text: &str) -> Vec<CCityHeader> {
             let rest = cap[2].trim();
 
             let tokens: Vec<&str> = rest.split_whitespace().collect();
-            if tokens.len() < 3 {
+            if tokens.len() < MIN_TOKENS_HEADER {
                 continue;
             }
 
@@ -1296,7 +1337,7 @@ fn parse_c_city_headers(text: &str) -> Vec<CCityHeader> {
 
             let num_fields = &tokens[num_start..];
 
-            if num_fields.len() < 2 {
+            if num_fields.len() < MIN_NUM_FIELDS_CITY {
                 continue;
             }
 
