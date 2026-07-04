@@ -45,15 +45,15 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ matrix.feature-flags }}-${{ hashFiles('Cargo.toml') }}
+          key: ${{ runner.os }}-cargo-${{ matrix.feature-flags }}-${{ hashFiles('Cargo.toml', 'Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-${{ matrix.feature-flags }}-
 
       - name: Restore pre-built database cache
-        if: contains(matrix.feature-flags, 'db')
+        if: matrix.feature-flags != '--no-default-features'
         uses: actions/cache@v5
         with:
           path: data/locations.db
-          key: ${{ runner.os }}-db-${{ hashFiles('src/builder/mod.rs', 'src/db/', 'Cargo.toml') }}
+          key: ${{ runner.os }}-db-${{ hashFiles('src/builder/', 'src/db/', 'Cargo.toml', 'Cargo.lock') }}
 
       - name: Run clippy
         run: cargo clippy ${{ matrix.feature-flags }} -- -D warnings

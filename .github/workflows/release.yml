@@ -27,7 +27,7 @@ jobs:
         path: |
           data/cache/big_villages.json
           data/cache/big_villages_with_polygons.json
-        key: v0-big-data-${{ hashFiles('src/builder/big_api.rs', 'Cargo.toml') }}
+        key: v0-big-data-${{ hashFiles('src/builder/', 'Cargo.toml') }}
 
     - name: Build database from pipeline
       run: cargo run --example build_db --features build-db -- --include-polygons --save-parsed-villages full
@@ -39,7 +39,7 @@ jobs:
         path: |
           data/cache/big_villages.json
           data/cache/big_villages_with_polygons.json
-        key: v0-big-data-${{ hashFiles('src/builder/big_api.rs', 'Cargo.toml') }}
+        key: v0-big-data-${{ hashFiles('src/builder/', 'Cargo.toml') }}
 
     - name: Run tests
       run: cargo test --features build-db
