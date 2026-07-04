@@ -35,10 +35,17 @@ tempfile = "3"
 regex = "1"
 
 [features]
+## Default: embedded SQLite DB + serde serialization for public types.
 default = ["db"]
+## Serializable derives on all public types (enabled by default via `db`).
 serde = ["dep:serde"]
+## Embedded SQLite lookup via the high-level `Database` API.
 db = ["dep:rusqlite", "serde"]
+## Full pipeline: PDF download, parsing, BIG API fetch, database construction.
+## Requires `poppler-utils` (pdftotext) on the system.
 build-db = ["db", "ureq", "regex", "serde_json", "sha2"]
+## Same as `db` plus exposes `Database::conn_guard()` for direct `rusqlite` access.
+## Useful for custom queries that cannot be expressed through the high-level API.
 raw-sqlite = ["db"]
 
 # Examples are automatically included; no need to explicitly list unless you want custom names or settings

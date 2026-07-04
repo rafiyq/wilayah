@@ -2,6 +2,9 @@ use std::fs;
 use std::io::Read;
 use std::path::Path;
 
+const DB_DOWNLOAD_URL: &str =
+    "https://github.com/rafiyq/wilayah/releases/latest/download/locations.db";
+
 fn main() {
     let out_dir = std::env::var("OUT_DIR").unwrap();
     let db_path = Path::new(&out_dir).join("locations.db");
@@ -12,7 +15,13 @@ fn main() {
     println!("cargo:rerun-if-changed=data/locations.db");
 
     if db_path.exists() {
-        // Already have DB in OUT_DIR from previous build
+        if let Ok(data_mtime) = fs::metadata(&data_db).and_then(|m| m.modified()) {
+            if let Ok(out_mtime) = fs::metadata(&db_path).and_then(|m| m.modified()) {
+                if data_mtime > out_mtime {
+                    fs::copy(&data_db, &db_path).expect("failed to update OUT_DIR DB from data/");
+                }
+            }
+        }
     } else if data_db.exists() {
         fs::copy(&data_db, &db_path).expect("failed to copy cached DB to OUT_DIR");
     } else {
@@ -35,8 +44,7 @@ fn main() {
 }
 
 fn download_latest_db(dest: &Path) -> Result<(), String> {
-    let url = "https://github.com/rafiyq/wilayah/releases/latest/download/locations.db";
-    let resp = ureq::get(url)
+    let resp = ureq::get(DB_DOWNLOAD_URL)
         .timeout(std::time::Duration::from_secs(300))
         .call()
         .map_err(|e| format!("{}", e))?;
