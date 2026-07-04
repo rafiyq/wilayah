@@ -445,6 +445,11 @@ impl VillageParser {
                         desa_count: current_desa_count,
                         keterangan: extracted.keterangan,
                     });
+                } else {
+                    eprintln!(
+                        "  [warn] Skipping village line, could not parse name: {}",
+                        code_str
+                    );
                 }
                 continue;
             }
@@ -1167,6 +1172,12 @@ fn parse_section_a(text: &str) -> Vec<SectionAProvince> {
 
             let tokens: Vec<&str> = tail.split_whitespace().collect();
             if tokens.len() < MIN_TOKENS_SECTION_A {
+                eprintln!(
+                    "  [warn] Section A: row {} has {} tokens, expected at least {}",
+                    name,
+                    tokens.len(),
+                    MIN_TOKENS_SECTION_A
+                );
                 continue;
             }
 
@@ -1191,6 +1202,11 @@ fn parse_section_a(text: &str) -> Vec<SectionAProvince> {
                 penduduk,
                 island_count,
             });
+        } else {
+            eprintln!(
+                "  [warn] Section A: could not parse line: {:?}",
+                &line[..line.len().min(80)]
+            );
         }
     }
     provinces
@@ -1253,6 +1269,11 @@ fn find_keterangan_in_num_fields(num_fields: &[&str]) -> Option<String> {
 fn parse_province_rest(rest: &str) -> Option<(String, Option<String>, Option<String>)> {
     let tokens: Vec<&str> = rest.split_whitespace().collect();
     if tokens.len() < MIN_TOKENS_HEADER {
+        eprintln!(
+            "  [warn] parse_province_rest: too few tokens ({}) in: {:?}",
+            tokens.len(),
+            &rest[..rest.len().min(80)]
+        );
         return None;
     }
 
@@ -1285,12 +1306,22 @@ fn parse_province_rest(rest: &str) -> Option<(String, Option<String>, Option<Str
 
     let num_start = find_numeric_start(&tokens);
     if num_start < 1 {
+        eprintln!(
+            "  [warn] parse_province_rest: no numeric fields in: {:?}",
+            &rest[..rest.len().min(80)]
+        );
         return None;
     }
 
     let name = tokens[..num_start].join(" ");
     let num_fields = &tokens[num_start..];
     if num_fields.len() < MIN_NUM_FIELDS_PROVINCE {
+        eprintln!(
+            "  [warn] parse_province_rest: {} num fields, expected at least {} in: {:?}",
+            num_fields.len(),
+            MIN_NUM_FIELDS_PROVINCE,
+            &rest[..rest.len().min(80)]
+        );
         return None;
     }
 
@@ -1319,6 +1350,11 @@ fn parse_c_city_headers(text: &str) -> Vec<CCityHeader> {
 
             let tokens: Vec<&str> = rest.split_whitespace().collect();
             if tokens.len() < MIN_TOKENS_HEADER {
+                eprintln!(
+                    "  [warn] parse_c_city_headers: too few tokens ({}) in: {:?}",
+                    tokens.len(),
+                    &rest[..rest.len().min(60)]
+                );
                 continue;
             }
 
@@ -1327,17 +1363,31 @@ fn parse_c_city_headers(text: &str) -> Vec<CCityHeader> {
                 .position(|t| *t == "Kabupaten" || *t == "Kab" || *t == "Kota");
             let type_idx = match type_idx {
                 Some(i) => i,
-                None => continue,
+                None => {
+                    eprintln!(
+                        "  [warn] parse_c_city_headers: no Kabupaten/Kota label in: {:?}",
+                        &rest[..rest.len().min(60)]
+                    );
+                    continue;
+                }
             };
 
             let num_start = find_numeric_start(&tokens);
             if num_start <= type_idx + 1 {
+                eprintln!(
+                    "  [warn] parse_c_city_headers: num_start ({}) <= type_idx+1 ({}) for code {}",
+                    num_start,
+                    type_idx + 1,
+                    code
+                );
                 continue;
             }
 
             let num_fields = &tokens[num_start..];
 
             if num_fields.len() < MIN_NUM_FIELDS_CITY {
+                eprintln!("  [warn] parse_c_city_headers: {} num fields, expected at least {} for code {}",
+                    num_fields.len(), MIN_NUM_FIELDS_CITY, code);
                 continue;
             }
 
@@ -1836,7 +1886,8 @@ fn parse_section_dc(text: &str) -> Vec<IslandRecord> {
     let coord_re = coord_regex();
 
     let kab_header_re =
-        regex::Regex::new(r"^\s*(\d{2}\.\d{2})\s+(Kabupaten|Kota)\s+(\S.*?)\s+(\S+)\s*$").unwrap();
+        regex::Regex::new(r"^\s*(\d{2}\.\d{2})\s+(Kabupaten|Kota)\s+(\S+(?:\s+\S+)*)\s+(\S+)\s*$")
+            .unwrap();
     let island_code_re =
         regex::Regex::new(r"^\s*(\d{2}\.\d{2}\.\d{5})\s+(\S+(?:\s+\S+)*?)\s{2,}(.+)$").unwrap();
     let province_header_re = regex::Regex::new(r"^\s*D\.c\.\d+\)\s+Provinsi\s+(.+)$").unwrap();
