@@ -23,10 +23,10 @@ jobs:
         run: rustup target add wasm32-unknown-unknown
 
       - name: Install wrangler
-        run: npm install -g wrangler
+        run: npm install -g wrangler@3
 
       - name: Substitute database_id
-        run: sed -i "s/REPLACE_WITH_YOUR_DATABASE_ID/${{ secrets.D1_DATABASE_ID }}/g" wrangler.toml
+        run: sed -i.bak "s/REPLACE_WITH_YOUR_DATABASE_ID/${{ secrets.D1_DATABASE_ID }}/g" wrangler.toml && rm -f wrangler.toml.bak
 
       - name: Deploy
         run: wrangler deploy
