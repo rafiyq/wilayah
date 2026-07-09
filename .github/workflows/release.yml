@@ -82,6 +82,9 @@ jobs:
         name: release-assets
         path: .
 
+    - name: Restore Cargo.lock to pristine state
+      run: git restore Cargo.lock
+
     - name: Publish to crates.io (dry-run)
       run: cargo publish --dry-run
 
