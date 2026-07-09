@@ -969,7 +969,7 @@ fn capitalize_all_lowercase(name: &mut String) {
 ///    - If keyword is before the gap: keyword wins (note prefix in name column)
 ///    - If gap is before the keyword: gap wins (undetected annotation after gap)
 /// 4. Truncate to `MAX_NAME_WORDS` words
-
+///
 /// Resolve the cleaned name and optional keterangan by choosing the cutoff between
 /// a column-gap boundary and a note-keyword boundary (whichever comes first).
 fn resolve_name_and_keterangan<'a>(
@@ -1753,8 +1753,8 @@ fn save_parsed_json<T: serde::Serialize>(
 ) -> Result<(), super::PipelineError> {
     use super::PipelineResultExt;
     let json_str =
-        serde_json::to_string_pretty(data).ctx(&format!("failed to serialize parsed {}", label))?;
-    std::fs::write(path, &json_str).ctx(&format!("failed to write parsed {} JSON", label))?;
+        serde_json::to_string_pretty(data).ctx(format!("failed to serialize parsed {}", label))?;
+    std::fs::write(path, &json_str).ctx(format!("failed to write parsed {} JSON", label))?;
     eprintln!("Saved {} parsed {} to {:?}", data.len(), label, path);
     Ok(())
 }
