@@ -1203,10 +1203,7 @@ fn parse_section_a(text: &str) -> Vec<SectionAProvince> {
                 island_count,
             });
         } else {
-            eprintln!(
-                "  [warn] Section A: could not parse line: {:?}",
-                &line[..line.len().min(80)]
-            );
+            eprintln!("  [warn] Section A: could not parse line: {:?}", line);
         }
     }
     provinces
@@ -1272,7 +1269,7 @@ fn parse_province_rest(rest: &str) -> Option<(String, Option<String>, Option<Str
         eprintln!(
             "  [warn] parse_province_rest: too few tokens ({}) in: {:?}",
             tokens.len(),
-            &rest[..rest.len().min(80)]
+            rest
         );
         return None;
     }
@@ -1308,7 +1305,7 @@ fn parse_province_rest(rest: &str) -> Option<(String, Option<String>, Option<Str
     if num_start < 1 {
         eprintln!(
             "  [warn] parse_province_rest: no numeric fields in: {:?}",
-            &rest[..rest.len().min(80)]
+            rest
         );
         return None;
     }
@@ -1320,7 +1317,7 @@ fn parse_province_rest(rest: &str) -> Option<(String, Option<String>, Option<Str
             "  [warn] parse_province_rest: {} num fields, expected at least {} in: {:?}",
             num_fields.len(),
             MIN_NUM_FIELDS_PROVINCE,
-            &rest[..rest.len().min(80)]
+            rest
         );
         return None;
     }
