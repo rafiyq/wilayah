@@ -2,7 +2,39 @@
 
 All notable changes to this project will be documented in this file.
 
-## 0.6.1 - 2026-07-02
+## 0.6.2 - 2026-07-02
+
+### Added
+
+- `REFERENCE_WINDOW`, `KETERANGAN_CONTINUATION_INDENT`, `MAX_TRAILING_COUNT_DIGITS`, `MIN_WORD_LEN_FOR_PERIOD_STRIP`, `MIN_TOKENS_SECTION_A`, `MIN_TOKENS_HEADER`, `MIN_NUM_FIELDS_PROVINCE`, `MIN_NUM_FIELDS_CITY` — named constants replacing magic numbers throughout `parse.rs`
+- `HasKeterangan` trait + `append_keterangan()` — shared keterangan continuation logic between village and city parsers
+- `find_earliest_keyword()` — generic keyword-matching helper replacing duplicated search loops in `find_note_boundary`, `strip_district_note`, and `extract_suffix_note`
+- `find_column_gap()` — consolidated gap-finding function replacing separate `first_gap_position` and `find_first_large_gap`
+- `resolve_name_and_keterangan()` — extracted from `extract_village_name` for the gap-vs-keyword cutoff decision
+- `fixup_district_notes()` — extracted from `VillageParser::parse` for district note re-integration logic
+- `build_population_maps()` — shared helper for Section E population data, used by both `extract_provinces` and `extract_cities`
+- `save_parsed_json()` — generic JSON serialization helper replacing 5 identical `save_parsed_*` functions
+- `#[doc]` comments on all 5 Cargo.toml feature flags
+- Warnings on silent data drops — `eprintln` messages when village lines, province headers, or city headers cannot be parsed (previously silently discarded)
+
+### Changed
+
+- CI cache keys now hash `Cargo.lock` and entire `src/builder/` directory instead of cherry-picked files; `raw-sqlite` cache condition fixed from `contains('db')` to `matrix.feature-flags != '--no-default-features'`
+- `build.rs` now compares modification times between `data/locations.db` and the OUT_DIR copy, re-copying when source is newer (fixes stale embedded DB after pipeline rebuilds)
+- `build.rs` download URL extracted to `DB_DOWNLOAD_URL` constant
+- `lowercase_note_prefixes` derived from `DISTRICT_NOTE_KEYWORDS` via `.to_lowercase()` instead of duplicate literal array
+- `Pipeline::run()` unified: 4 separate `if self.save_parsed_villages` blocks merged into one; path variables use `.then()` for concise `Option` construction
+- `lock_poly()` returns `Result<MutexGuard>` instead of panicking with `expect()` when polygon DB is not loaded
+- `village_count()` returns `Result<u32>` via `try_from().map_err()` instead of `expect()`
+- Release workflow split into `build` + `publish` jobs — publish now starts from a clean checkout, eliminating `--allow-dirty` flag on `cargo publish`
+- `kab_header_re` regex tightened from `\S.*?` (lazy, could over-capture) to `\S+(?:\s+\S+)*` (greedy word-boundary)
+- Cloudflare Worker deploy.yml pins `wrangler@3` and uses portable `sed -i.bak` pattern (macOS-compatible)
+
+### Fixed
+
+- CI cache bug: `contains(matrix.feature-flags, 'db')` returned false for `raw-sqlite` feature causing DB cache to never be restored on `raw-sqlite` CI runs
+- Release workflow BIG data cache key only hashed `big_api.rs` (missing `parse.rs`, `spatial.rs` changes)
+- Greedy `\S.*?` in `kab_header_re` could misparse city names in island section D.c headers
 
 ### Changed
 
